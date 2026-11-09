@@ -43,11 +43,18 @@ services:
     environment:
       USERS_PORT: ${USERS_PORT}
       MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
+      SMTP_HOST: mailpit
+      SMTP_PORT: "1025"
+      CLIENT_BASE_URL: ${CLIENT_BASE_URL}
+      DEFAULT_QUOTA_BYTES: ${DEFAULT_QUOTA_BYTES}
+      CONFIRM_TTL: ${CONFIRM_TTL}
     ports:
       - "127.0.0.1:${USERS_PORT}:${USERS_PORT}"
     depends_on:
       mongo:
         condition: service_healthy
+      mailpit:
+        condition: service_started
 
 volumes:
   mongo-data:
