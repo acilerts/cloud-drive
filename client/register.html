@@ -1,0 +1,73 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Registracija - Cloud Drive</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="auth-page">
+        <div class="auth-box">
+            <div class="logo">
+                <div class="logo-mark">CD</div>
+                <span>Cloud Drive</span>
+            </div>
+
+            <h1>Registracija naloga</h1>
+            <p class="subtitle">Unesite podatke za kreiranje novog naloga</p>
+
+            <div id="msgBox" class="msg-box"></div>
+
+            <form id="registerForm" novalidate>
+                <div class="form-row">
+                    <div class="form-field">
+                        <label for="firstName">Ime</label>
+                        <input type="text" id="firstName" name="firstName" required>
+                        <div class="err-text" id="err-firstName"></div>
+                    </div>
+                    <div class="form-field">
+                        <label for="lastName">Prezime</label>
+                        <input type="text" id="lastName" name="lastName" required>
+                        <div class="err-text" id="err-lastName"></div>
+                    </div>
+                </div>
+
+                <div class="form-field">
+                    <label for="email">Imejl adresa</label>
+                    <input type="email" id="email" name="email" required>
+                    <div class="err-text" id="err-email"></div>
+                </div>
+
+                <div class="form-field">
+                    <label for="password">Lozinka</label>
+                    <input type="password" id="password" name="password" required>
+                    <div class="err-text" id="err-password"></div>
+                    <ul class="pw-rules">
+                        <li id="rule-len">Najmanje 10 karaktera</li>
+                        <li id="rule-upper">Veliko slovo (A-Z)</li>
+                        <li id="rule-lower">Malo slovo (a-z)</li>
+                        <li id="rule-digit">Cifra (0-9)</li>
+                        <li id="rule-spec">Specijalni karakter</li>
+                    </ul>
+                </div>
+
+                <div class="form-field">
+                    <label for="passwordRepeat">Ponovljena lozinka</label>
+                    <input type="password" id="passwordRepeat" name="passwordRepeat" required>
+                    <div class="err-text" id="err-passwordRepeat"></div>
+                </div>
+
+                <button type="submit" id="submitBtn" class="btn btn-primary">Registruj se</button>
+            </form>
+
+            <div class="auth-links">
+                Vec imate nalog? <a href="login.html">Prijavite se</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/register.js"></script>
+</body>
+</html>
