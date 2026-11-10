@@ -1,6 +1,7 @@
 package main
 
 import (
+	"crypto/ed25519"
 	"encoding/json"
 	"errors"
 	"log/slog"
@@ -22,11 +23,21 @@ type Server struct {
 	clientBaseURL string
 	defaultQuota  int64
 	confirmTTL    time.Duration
+
+	jwtKey         ed25519.PrivateKey
+	jwtTTL         time.Duration
+	otpTTL         time.Duration
+	passwordMaxAge time.Duration
+	maxFailures    int
+	lockoutFor     time.Duration
+	dummyHash      []byte
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /register", s.handleRegister)
 	mux.HandleFunc("POST /confirm", s.handleConfirm)
+	mux.HandleFunc("POST /login", s.handleLogin)
+	mux.HandleFunc("POST /login/verify", s.handleLoginVerify)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {
