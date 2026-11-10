@@ -12,3 +12,5 @@ coverage.out
 .idea/
 
 .DS_Store
+
+keys/

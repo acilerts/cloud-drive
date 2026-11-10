@@ -15,6 +15,7 @@ import (
 	"go.mongodb.org/mongo-driver/v2/mongo"
 	"go.mongodb.org/mongo-driver/v2/mongo/options"
 	"go.mongodb.org/mongo-driver/v2/mongo/readpref"
+	"golang.org/x/crypto/bcrypt"
 
 	"github.com/acilerts/cloud-drive/internal/platform"
 )
@@ -44,6 +45,11 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	keyPath, err := platform.Required("JWT_PRIVATE_KEY_FILE")
+	if err != nil {
+		return err
+	}
+
 	dbName := platform.Default("MONGO_DB", "users")
 	smtpPort := platform.Default("SMTP_PORT", "1025")
 	mailFrom := platform.Default("MAIL_FROM", "no-reply@cloud-drive.local")
@@ -52,9 +58,38 @@ func run(logger *slog.Logger) error {
 	if err != nil || quota <= 0 {
 		return fmt.Errorf("invalid DEFAULT_QUOTA_BYTES")
 	}
-	confirmTTL, err := time.ParseDuration(platform.Default("CONFIRM_TTL", "24h"))
-	if err != nil || confirmTTL <= 0 {
-		return fmt.Errorf("invalid CONFIRM_TTL")
+	confirmTTL, err := platform.Duration("CONFIRM_TTL", "24h")
+	if err != nil {
+		return err
+	}
+	jwtTTL, err := platform.Duration("JWT_TTL", "30m")
+	if err != nil {
+		return err
+	}
+	otpTTL, err := platform.Duration("OTP_TTL", "5m")
+	if err != nil {
+		return err
+	}
+	passwordMaxAge, err := platform.Duration("PASSWORD_MAX_AGE", "1440h") // 60 dana
+	if err != nil {
+		return err
+	}
+	lockoutFor, err := platform.Duration("LOCKOUT_DURATION", "15m")
+	if err != nil {
+		return err
+	}
+	maxFailures, err := platform.Int("MAX_LOGIN_FAILURES", 5)
+	if err != nil {
+		return err
+	}
+
+	jwtKey, err := platform.LoadPrivateKey(keyPath)
+	if err != nil {
+		return fmt.Errorf("load jwt private key: %w", err)
+	}
+	dummyHash, err := bcrypt.GenerateFromPassword([]byte("dummy-password"), bcryptCost)
+	if err != nil {
+		return fmt.Errorf("dummy hash: %w", err)
 	}
 
 	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
@@ -78,12 +113,19 @@ func run(logger *slog.Logger) error {
 	}
 
 	app := &Server{
-		store:         store,
-		mailer:        &Mailer{host: smtpHost, port: smtpPort, from: mailFrom},
-		logger:        logger,
-		clientBaseURL: clientBaseURL,
-		defaultQuota:  quota,
-		confirmTTL:    confirmTTL,
+		store:          store,
+		mailer:         &Mailer{host: smtpHost, port: smtpPort, from: mailFrom},
+		logger:         logger,
+		clientBaseURL:  clientBaseURL,
+		defaultQuota:   quota,
+		confirmTTL:     confirmTTL,
+		jwtKey:         jwtKey,
+		jwtTTL:         jwtTTL,
+		otpTTL:         otpTTL,
+		passwordMaxAge: passwordMaxAge,
+		maxFailures:    maxFailures,
+		lockoutFor:     lockoutFor,
+		dummyHash:      dummyHash,
 	}
 
 	mux := http.NewServeMux()
