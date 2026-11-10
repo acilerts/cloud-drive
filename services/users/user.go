@@ -25,6 +25,8 @@ type User struct {
 	QuotaBytes        int64         `bson:"quotaBytes"`
 	PasswordChangedAt time.Time     `bson:"passwordChangedAt"`
 	CreatedAt         time.Time     `bson:"createdAt"`
+	FailedLogins      int           `bson:"failedLogins"`
+	LockedUntil       time.Time     `bson:"lockedUntil"`
 }
 
 type Token struct {
@@ -37,3 +39,12 @@ type Token struct {
 }
 
 const TokenConfirm = "confirm"
+
+type OTP struct {
+	ID        bson.ObjectID `bson:"_id"`
+	UserID    bson.ObjectID `bson:"userId"`
+	CodeHash  string        `bson:"codeHash"`
+	Attempts  int           `bson:"attempts"`
+	ExpiresAt time.Time     `bson:"expiresAt"`
+	CreatedAt time.Time     `bson:"createdAt"`
+}

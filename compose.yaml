@@ -48,6 +48,14 @@ services:
       CLIENT_BASE_URL: ${CLIENT_BASE_URL}
       DEFAULT_QUOTA_BYTES: ${DEFAULT_QUOTA_BYTES}
       CONFIRM_TTL: ${CONFIRM_TTL}
+      JWT_PRIVATE_KEY_FILE: /run/secrets/jwt_private.pem
+      JWT_TTL: ${JWT_TTL}
+      OTP_TTL: ${OTP_TTL}
+      PASSWORD_MAX_AGE: ${PASSWORD_MAX_AGE}
+      MAX_LOGIN_FAILURES: ${MAX_LOGIN_FAILURES}
+      LOCKOUT_DURATION: ${LOCKOUT_DURATION}
+    volumes:
+      - ./keys/jwt_private.pem:/run/secrets/jwt_private.pem:ro
     ports:
       - "127.0.0.1:${USERS_PORT}:${USERS_PORT}"
     depends_on:
