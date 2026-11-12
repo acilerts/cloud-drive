@@ -71,6 +71,9 @@ form.addEventListener("submit", async (e) => {
     if (password.length < 10) {
         setFieldError("password", "Lozinka mora imati najmanje 10 karaktera");
         hasErr = true;
+    } else if (!(/[A-Z]/.test(password) && /[a-z]/.test(password) && /[0-9]/.test(password) && /[^A-Za-z0-9\s]/.test(password))) {
+        setFieldError("password", "Lozinka mora sadrzati veliko slovo, malo slovo, cifru i specijalni karakter");
+        hasErr = true;
     }
     if (password !== passwordRepeat) {
         setFieldError("passwordRepeat", "Lozinke se ne poklapaju");

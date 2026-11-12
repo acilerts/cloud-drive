@@ -1,4 +1,4 @@
-const API_BASE = "http://localhost:8081";
+const API_BASE = "http://localhost:8080";
 
 async function sendRequest(path, method = "GET", body = null) {
     const opts = {
