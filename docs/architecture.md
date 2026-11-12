@@ -29,11 +29,31 @@ API Gateway ne poseduje sopstvenu bazu podataka.
 
 ## Komunikacija između servisa
 
-Klijentska aplikacija pristupa sistemu preko API Gateway-a. Gateway prosleđuje zahteve odgovarajućim servisima, tako da klijent ne mora direktno da komunicira sa svakim servisom.
+Klijentska aplikacija pristupa sistemu preko API Gateway-a. Gateway predstavlja jedinstvenu ulaznu tačku sistema i prosleđuje zahteve odgovarajućim servisima, tako da klijent ne mora direktno da komunicira sa svakim servisom.
 
-Servisi međusobno razmenjuju podatke sinhrono, putem HTTP zahteva, ili asinhrono, putem događaja, u zavisnosti od potrebe konkretne operacije.
+Servisi međusobno razmenjuju podatke na dva načina:
 
-Jedan primer sinhrone komunikacije je provera korisničke kvote: prilikom otpremanja fajla, Files servis proverava kod Users servisa koliko prostora korisnik može da koristi.
+- **Sinhrona komunikacija** – putem HTTP zahteva i odgovora, kada je servisu potreban neposredan odgovor drugog servisa kako bi nastavio obradu zahteva.
+- **Asinhrona komunikacija** – putem događaja, kada servis objavljuje informaciju o nekoj aktivnosti, a drugi servisi mogu da je obrade nezavisno od servisa koji je događaj proizveo.
+
+### Sinhrona komunikacija
+
+Sinhrona komunikacija koristi se kada je za izvršavanje operacije neophodan neposredan odgovor drugog servisa.
+
+Primer: prilikom otpremanja fajla, Files servis proverava kod Users servisa podatke o korisničkoj kvoti. Users servis vraća informaciju o raspoloživom prostoru, nakon čega Files servis može da nastavi ili odbije otpremanje fajla.
+
+### Asinhrona komunikacija
+
+Asinhrona komunikacija koristi se za razmenu događaja između servisa, kada nije potrebno da servis koji je proizveo događaj čeka da ga drugi servisi obrade.
+
+Primeri događaja:
+
+- Sharing servis može da proizvede događaj kada korisnik dobije pristup fajlu ili fascikli.
+- Files servis može da proizvede događaj kada se otpremi nova verzija fajla.
+- Notifications servis može da obradi odgovarajući događaj i kreira obaveštenje za korisnika.
+- Analytics servis može da obradi događaje i sačuva podatke o aktivnostima korisnika radi kasnije analize.
+
+Na ovaj način servisi mogu da reaguju na aktivnosti drugih servisa bez direktne međusobne zavisnosti tokom obrade događaja.
 
 ## Konfiguracija
 
