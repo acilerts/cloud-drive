@@ -120,6 +120,19 @@ func newGatewayHandler(cfg *Config, logger *slog.Logger) http.Handler {
 			return
 		}
 
+		// Pocetna stranica
+		if path == "/" {
+			http.Redirect(w, r, "/login.html", http.StatusFound)
+			return
+		}
+
+		// Serviranje klijentskih statickih fajlova ako fajl postoji
+		cleanPath := filepath.Clean(filepath.Join(cfg.ClientDir, path))
+		if info, err := os.Stat(cleanPath); err == nil && !info.IsDir() {
+			fileServer.ServeHTTP(w, r)
+			return
+		}
+
 		// Rute za korisnicki servis (Users)
 		if strings.HasPrefix(path, "/register") ||
 			strings.HasPrefix(path, "/confirm") ||
@@ -139,18 +152,6 @@ func newGatewayHandler(cfg *Config, logger *slog.Logger) http.Handler {
 		// Rute za obavestenja (Notifications)
 		if strings.HasPrefix(path, "/notifications") {
 			notifProxy.ServeHTTP(w, r)
-			return
-		}
-
-		// Serviranje klijentskih statickih fajlova
-		if path == "/" {
-			http.Redirect(w, r, "/login.html", http.StatusFound)
-			return
-		}
-
-		cleanPath := filepath.Clean(filepath.Join(cfg.ClientDir, path))
-		if info, err := os.Stat(cleanPath); err == nil && !info.IsDir() {
-			fileServer.ServeHTTP(w, r)
 			return
 		}
 
