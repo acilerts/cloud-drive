@@ -1,0 +1,260 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Cloud Drive</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="logo">
+            <div class="logo-mark">CD</div>
+            <span>Cloud Drive</span>
+        </div>
+
+        <div class="search-wrap">
+            <input type="text" id="searchInput" placeholder="Pretraga fajlova i foldera...">
+        </div>
+
+        <div class="topbar-actions">
+            <button id="openNotifBtn" class="btn btn-outline btn-sm">
+                Notifikacije <span id="notifBadge" class="badge-count">2</span>
+            </button>
+            <button id="openChangePwBtn" class="btn btn-outline btn-sm">Promena lozinke</button>
+            <div class="user-pill">
+                <div id="userAvatar" class="avatar">K</div>
+                <span id="userName">Korisnik</span>
+            </div>
+            <button id="logoutBtn" class="btn btn-outline btn-sm">Odjava</button>
+        </div>
+    </header>
+
+    <div class="layout">
+        <aside class="sidebar">
+            <div class="sidebar-actions">
+                <button id="openNewFolderBtn" class="btn btn-primary">+ Novi folder</button>
+                <button id="openUploadBtn" class="btn btn-outline">Otpremi fajl</button>
+            </div>
+
+            <ul class="menu">
+                <li class="active" data-section="files">Moji fajlovi</li>
+                <li data-section="shared">Podeljeno sa mnom</li>
+                <li data-section="activity">Istorija aktivnosti</li>
+            </ul>
+
+            <div class="quota-panel">
+                <div class="quota-info">
+                    <span>Zauzece</span>
+                    <span id="quotaLabel">120 MB / 1 GB</span>
+                </div>
+                <div class="quota-bar">
+                    <div id="quotaFill" class="quota-fill" style="width: 12%;"></div>
+                </div>
+                <button id="openQuotaBtn" class="btn btn-outline btn-sm" style="width: 100%;">Zahtev za vecu kvotu</button>
+            </div>
+        </aside>
+
+        <main class="main-area">
+            <div id="view-files">
+                <div class="path-bar" id="breadcrumbs">
+                    <span class="current" data-folder="root">Moji fajlovi</span>
+                </div>
+
+                <div class="block-title">Folderi</div>
+                <div class="folders-wrap" id="foldersList"></div>
+
+                <div class="block-title">Datoteke</div>
+                <div class="table-wrap">
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>Naziv</th>
+                                <th>Vlasnik</th>
+                                <th>Izmenjeno</th>
+                                <th>Velicina</th>
+                                <th style="text-align: right;">Akcije</th>
+                            </tr>
+                        </thead>
+                        <tbody id="filesBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="view-shared" style="display: none;">
+                <div class="path-bar">
+                    <span class="current">Podeljeno sa mnom</span>
+                </div>
+                <div class="table-wrap">
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>Naziv</th>
+                                <th>Vlasnik</th>
+                                <th>Tip</th>
+                                <th>Velicina</th>
+                                <th style="text-align: right;">Akcije</th>
+                            </tr>
+                        </thead>
+                        <tbody id="sharedBody">
+                            <tr>
+                                <td>Arhitektura_Sistema.txt</td>
+                                <td>Marko Strelica</td>
+                                <td>Tekst</td>
+                                <td>8 KB</td>
+                                <td>
+                                    <div class="row-actions">
+                                        <button class="btn btn-outline btn-sm shared-preview-btn" data-name="Arhitektura_Sistema.txt" data-content="Cloud Drive mikroservisna arhitektura: Gateway (8080), Users (8081), Files (8082).">Pregled</button>
+                                        <button class="btn btn-outline btn-sm shared-download-btn" data-name="Arhitektura_Sistema.txt" data-content="Cloud Drive mikroservisna arhitektura: Gateway (8080), Users (8081), Files (8082).">Preuzmi</button>
+                                    </div>
+                                </td>
+                            </tr>
+                            <tr>
+                                <td>Seminarski_Rad.pdf</td>
+                                <td>Milos Stojinovic</td>
+                                <td>Dokument</td>
+                                <td>1.2 MB</td>
+                                <td>
+                                    <div class="row-actions">
+                                        <button class="btn btn-outline btn-sm shared-download-btn" data-name="Seminarski_Rad.pdf" data-content="PDF dokument">Preuzmi</button>
+                                    </div>
+                                </td>
+                            </tr>
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="view-activity" style="display: none;">
+                <div class="path-bar">
+                    <span class="current">Istorija aktivnosti</span>
+                </div>
+                <div class="table-wrap">
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>Aktivnost</th>
+                                <th>Stavka</th>
+                                <th>Vreme</th>
+                            </tr>
+                        </thead>
+                        <tbody id="activityBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal-bg" id="folderModal">
+        <div class="modal">
+            <h3>Kreiraj folder</h3>
+            <div class="form-field">
+                <label for="folderNameInput">Naziv foldera</label>
+                <input type="text" id="folderNameInput">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="saveFolderBtn" class="btn btn-primary" style="width: auto;">Kreiraj</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="uploadModal">
+        <div class="modal">
+            <h3>Otpremi datoteku</h3>
+            <div class="form-field">
+                <label for="fileInput">Izaberite datoteku</label>
+                <input type="file" id="fileInput">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="saveUploadBtn" class="btn btn-primary" style="width: auto;">Otpremi</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="renameModal">
+        <div class="modal">
+            <h3>Preimenuj stavku</h3>
+            <div class="form-field">
+                <label for="renameInput">Novi naziv</label>
+                <input type="text" id="renameInput">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="saveRenameBtn" class="btn btn-primary" style="width: auto;">Sacuvaj</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="quotaModal">
+        <div class="modal">
+            <h3>Zahtev za povecanje kvote</h3>
+            <div class="form-field">
+                <label for="quotaInput">Trazena kvota (GB)</label>
+                <input type="number" id="quotaInput" min="2" max="100" value="5">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="sendQuotaBtn" class="btn btn-primary" style="width: auto;">Posalji</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="previewModal">
+        <div class="modal" style="max-width: 520px;">
+            <h3 id="previewTitle">Pregled datoteke</h3>
+            <div id="previewContent" style="background: #f8fafc; border: 1px solid #e2e8f0; border-radius: 5px; padding: 14px; font-size: 13px; max-height: 280px; overflow: auto; white-space: pre-wrap;"></div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Zatvori</button>
+                <button id="downloadFromPreviewBtn" class="btn btn-primary" style="width: auto;">Preuzmi</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="changePwModal">
+        <div class="modal">
+            <h3>Promena lozinke</h3>
+            <div id="changePwMsg" class="msg-box"></div>
+            <div class="form-field">
+                <label for="oldPwInput">Trenutna lozinka</label>
+                <input type="password" id="oldPwInput">
+            </div>
+            <div class="form-field">
+                <label for="newPwInput">Nova lozinka (min 10 karaktera)</label>
+                <input type="password" id="newPwInput">
+            </div>
+            <div class="form-field">
+                <label for="repeatNewPwInput">Ponovite novu lozinku</label>
+                <input type="password" id="repeatNewPwInput">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="saveChangePwBtn" class="btn btn-primary" style="width: auto;">Promeni</button>
+            </div>
+        </div>
+    </div>
+
+    <div class="modal-bg" id="notifModal">
+        <div class="modal">
+            <h3>Notifikacije</h3>
+            <ul class="notif-list" id="notifList">
+                <li>
+                    Podeljen je folder "Projekti" sa vama.
+                    <span class="notif-time">10.11.2026. 11:40</span>
+                </li>
+                <li>
+                    Dodata je nova verzija fajla "Specifikacija.pdf".
+                    <span class="notif-time">09.11.2026. 19:05</span>
+                </li>
+            </ul>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Zatvori</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/app.js"></script>
+</body>
+</html>
