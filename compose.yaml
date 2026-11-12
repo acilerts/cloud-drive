@@ -64,6 +64,20 @@ services:
       mailpit:
         condition: service_started
 
+  gateway:
+    build:
+      context: .
+      dockerfile: services/gateway/Dockerfile
+    restart: unless-stopped
+    environment:
+      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
+      USERS_SERVICE_URL: http://users:${USERS_PORT:-8081}
+      CLIENT_DIR: /client
+    ports:
+      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+    depends_on:
+      - users
+
 volumes:
   mongo-data:
   minio-data:
