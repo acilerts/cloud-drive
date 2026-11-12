@@ -1,0 +1,93 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Prijava - Cloud Drive</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="auth-page">
+        <div class="auth-box">
+            <div class="logo">
+                <div class="logo-mark">CD</div>
+                <span>Cloud Drive</span>
+            </div>
+
+            <div id="credentialsStep">
+                <h1>Prijava</h1>
+                <p class="subtitle">Unesite imejl i lozinku</p>
+
+                <div id="loginMsg" class="msg-box"></div>
+
+                <form id="loginForm">
+                    <div class="form-field">
+                        <label for="email">Imejl adresa</label>
+                        <input type="email" id="email" name="email" required>
+                    </div>
+
+                    <div class="form-field">
+                        <label for="password">Lozinka</label>
+                        <input type="password" id="password" name="password" required>
+                    </div>
+
+                    <button type="submit" id="loginBtn" class="btn btn-primary">Dalje</button>
+                </form>
+
+                <div class="auth-links">
+                    <a href="#" id="forgotPwLink">Zaboravili ste lozinku?</a>
+                </div>
+                <div class="auth-links" style="margin-top: 8px;">
+                    Nemate nalog? <a href="register.html">Registrujte se</a>
+                </div>
+            </div>
+
+            <div id="resetStep" style="display: none;">
+                <h1>Reset lozinke</h1>
+                <p class="subtitle">Unesite imejl adresu za slanje linka za promenu lozinke</p>
+
+                <div id="resetMsg" class="msg-box"></div>
+
+                <form id="resetForm">
+                    <div class="form-field">
+                        <label for="resetEmail">Imejl adresa</label>
+                        <input type="email" id="resetEmail" required>
+                    </div>
+                    <button type="submit" id="resetBtn" class="btn btn-primary">Posalji link</button>
+                </form>
+
+                <div class="auth-links">
+                    <a href="#" id="backFromResetBtn">Nazad na prijavu</a>
+                </div>
+            </div>
+
+            <div id="otpStep" style="display: none;">
+                <h1>Jednokratni kod</h1>
+                <p class="subtitle">Unesite kod koji je poslat na vasu imejl adresu</p>
+
+                <div id="otpMsg" class="msg-box"></div>
+
+                <form id="otpForm">
+                    <div class="otp-row">
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                        <input type="text" class="otp-input" maxlength="1" inputmode="numeric" required>
+                    </div>
+
+                    <button type="submit" id="otpBtn" class="btn btn-primary">Potvrdi prijavu</button>
+                </form>
+
+                <div class="auth-links">
+                    <a href="#" id="backBtn">Nazad na unos lozinke</a>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/login.js"></script>
+</body>
+</html>
