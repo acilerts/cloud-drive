@@ -35,18 +35,36 @@ func main() {
 }
 
 func run(logger *slog.Logger) error {
-	port := platform.Default("GATEWAY_PORT", "8080")
-	usersRaw := platform.Default("USERS_SERVICE_URL", "http://users:8081")
-	filesRaw := platform.Default("FILES_SERVICE_URL", "http://files:8082")
-	notifRaw := platform.Default("NOTIFICATIONS_SERVICE_URL", "http://notifications:8084")
+	port, err := platform.Required("GATEWAY_PORT")
+	if err != nil {
+		return err
+	}
+	usersRaw, err := platform.Required("USERS_SERVICE_URL")
+	if err != nil {
+		return err
+	}
+	filesRaw, err := platform.Required("FILES_SERVICE_URL")
+	if err != nil {
+		return err
+	}
+	notifRaw, err := platform.Required("NOTIFICATIONS_SERVICE_URL")
+	if err != nil {
+		return err
+	}
 	clientDir := platform.Default("CLIENT_DIR", "/client")
 
-	usersURL, err := url.Parse(usersRaw)
+	usersURL, err := parseServiceURL("USERS_SERVICE_URL", usersRaw)
 	if err != nil {
-		return fmt.Errorf("invalid USERS_SERVICE_URL: %w", err)
+		return err
 	}
-	filesURL, _ := url.Parse(filesRaw)
-	notifURL, _ := url.Parse(notifRaw)
+	filesURL, err := parseServiceURL("FILES_SERVICE_URL", filesRaw)
+	if err != nil {
+		return err
+	}
+	notifURL, err := parseServiceURL("NOTIFICATIONS_SERVICE_URL", notifRaw)
+	if err != nil {
+		return err
+	}
 
 	cfg := &Config{
 		Port:             port,
@@ -86,6 +104,18 @@ func run(logger *slog.Logger) error {
 	}
 
 	return nil
+}
+
+func parseServiceURL(key, raw string) (*url.URL, error) {
+	serviceURL, err := url.Parse(raw)
+	if err != nil {
+		return nil, fmt.Errorf("invalid %s: %w", key, err)
+	}
+	if serviceURL.Scheme == "" || serviceURL.Host == "" {
+		return nil, fmt.Errorf("invalid %s: URL must contain scheme and host", key)
+	}
+
+	return serviceURL, nil
 }
 
 func newGatewayHandler(cfg *Config, logger *slog.Logger) http.Handler {
