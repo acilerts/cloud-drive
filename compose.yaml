@@ -53,8 +53,13 @@ services:
       JWT_TTL: ${JWT_TTL}
       OTP_TTL: ${OTP_TTL}
       PASSWORD_MAX_AGE: ${PASSWORD_MAX_AGE}
+      PASSWORD_MIN_AGE: ${PASSWORD_MIN_AGE:-}
+      RESET_TTL: ${RESET_TTL:-}
+      MAGIC_TTL: ${MAGIC_TTL:-}
       MAX_LOGIN_FAILURES: ${MAX_LOGIN_FAILURES}
       LOCKOUT_DURATION: ${LOCKOUT_DURATION}
+      ADMIN_EMAIL: ${ADMIN_EMAIL:-}
+      ADMIN_PASSWORD: ${ADMIN_PASSWORD:-}
     volumes:
       - ./keys/jwt_private.pem:/run/secrets/jwt_private.pem:ro
     ports:

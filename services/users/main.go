@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/ed25519"
 	"errors"
 	"fmt"
 	"log/slog"
@@ -53,6 +54,12 @@ func run(logger *slog.Logger) error {
 	dbName := platform.Default("MONGO_DB", "users")
 	smtpPort := platform.Default("SMTP_PORT", "1025")
 	mailFrom := platform.Default("MAIL_FROM", "no-reply@cloud-drive.local")
+	adminEmail := platform.Default("ADMIN_EMAIL", "")
+	adminPassword := platform.Default("ADMIN_PASSWORD", "")
+
+	if (adminEmail == "") != (adminPassword == "") {
+		return fmt.Errorf("ADMIN_EMAIL and ADMIN_PASSWORD must be set together")
+	}
 
 	quota, err := strconv.ParseInt(platform.Default("DEFAULT_QUOTA_BYTES", "1073741824"), 10, 64)
 	if err != nil || quota <= 0 {
@@ -74,6 +81,18 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	passwordMinAge, err := platform.Duration("PASSWORD_MIN_AGE", "24h") // 1 dan
+	if err != nil {
+		return err
+	}
+	resetTTL, err := platform.Duration("RESET_TTL", "15m")
+	if err != nil {
+		return err
+	}
+	magicTTL, err := platform.Duration("MAGIC_TTL", "10m")
+	if err != nil {
+		return err
+	}
 	lockoutFor, err := platform.Duration("LOCKOUT_DURATION", "15m")
 	if err != nil {
 		return err
@@ -86,6 +105,10 @@ func run(logger *slog.Logger) error {
 	jwtKey, err := platform.LoadPrivateKey(keyPath)
 	if err != nil {
 		return fmt.Errorf("load jwt private key: %w", err)
+	}
+	jwtPub, ok := jwtKey.Public().(ed25519.PublicKey)
+	if !ok {
+		return fmt.Errorf("derive jwt public key")
 	}
 	dummyHash, err := bcrypt.GenerateFromPassword([]byte("dummy-password"), bcryptCost)
 	if err != nil {
@@ -120,12 +143,24 @@ func run(logger *slog.Logger) error {
 		defaultQuota:   quota,
 		confirmTTL:     confirmTTL,
 		jwtKey:         jwtKey,
+		jwtPub:         jwtPub,
 		jwtTTL:         jwtTTL,
 		otpTTL:         otpTTL,
 		passwordMaxAge: passwordMaxAge,
+		passwordMinAge: passwordMinAge,
+		resetTTL:       resetTTL,
+		magicTTL:       magicTTL,
 		maxFailures:    maxFailures,
 		lockoutFor:     lockoutFor,
 		dummyHash:      dummyHash,
+	}
+
+	if adminEmail != "" {
+		seedCtx, cancelSeed := context.WithTimeout(ctx, 15*time.Second)
+		defer cancelSeed()
+		if err := app.SeedAdmin(seedCtx, adminEmail, adminPassword); err != nil {
+			return fmt.Errorf("seed admin: %w", err)
+		}
 	}
 
 	mux := http.NewServeMux()

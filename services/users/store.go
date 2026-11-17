@@ -89,6 +89,18 @@ func (s *Store) FindUserByEmail(ctx context.Context, email string) (*User, error
 	return &u, nil
 }
 
+func (s *Store) FindUserByID(ctx context.Context, id bson.ObjectID) (*User, error) {
+	var u User
+	err := s.users.FindOne(ctx, bson.M{"_id": id}).Decode(&u)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return nil, ErrNotFound
+	}
+	if err != nil {
+		return nil, err
+	}
+	return &u, nil
+}
+
 func (s *Store) CreateToken(ctx context.Context, userID bson.ObjectID, typ, tokenHash string, ttl time.Duration) error {
 	now := time.Now().UTC()
 	_, err := s.tokens.InsertOne(ctx, Token{
@@ -100,6 +112,29 @@ func (s *Store) CreateToken(ctx context.Context, userID bson.ObjectID, typ, toke
 		CreatedAt: now,
 	})
 	return err
+}
+
+func (s *Store) ReplaceToken(ctx context.Context, userID bson.ObjectID, typ, tokenHash string, ttl time.Duration) error {
+	if _, err := s.tokens.DeleteMany(ctx, bson.M{"userId": userID, "type": typ}); err != nil {
+		return err
+	}
+	return s.CreateToken(ctx, userID, typ, tokenHash, ttl)
+}
+
+func (s *Store) PeekToken(ctx context.Context, typ, tokenHash string) (bson.ObjectID, error) {
+	var t Token
+	err := s.tokens.FindOne(ctx, bson.M{
+		"tokenHash": tokenHash,
+		"type":      typ,
+		"expiresAt": bson.M{"$gt": time.Now().UTC()},
+	}).Decode(&t)
+	if errors.Is(err, mongo.ErrNoDocuments) {
+		return bson.ObjectID{}, ErrInvalidToken
+	}
+	if err != nil {
+		return bson.ObjectID{}, err
+	}
+	return t.UserID, nil
 }
 
 func (s *Store) ConsumeToken(ctx context.Context, typ, tokenHash string) (bson.ObjectID, error) {
@@ -129,6 +164,26 @@ func (s *Store) ActivateUser(ctx context.Context, id bson.ObjectID) error {
 		return ErrInvalidToken
 	}
 	return nil
+}
+
+func (s *Store) SetPassword(ctx context.Context, id bson.ObjectID, hash string) error {
+	res, err := s.users.UpdateOne(ctx, bson.M{"_id": id}, bson.M{"$set": bson.M{
+		"passwordHash":      hash,
+		"passwordChangedAt": time.Now().UTC(),
+		"failedLogins":      0,
+		"lockedUntil":       time.Time{},
+	}})
+	if err != nil {
+		return err
+	}
+	if res.MatchedCount == 0 {
+		return ErrNotFound
+	}
+	if _, err := s.otps.DeleteMany(ctx, bson.M{"userId": id}); err != nil {
+		return err
+	}
+	_, err = s.tokens.DeleteMany(ctx, bson.M{"userId": id})
+	return err
 }
 
 func (s *Store) RecordFailedLogin(ctx context.Context, id bson.ObjectID, maxFailures int, lockFor time.Duration) (bool, error) {
