@@ -42,9 +42,10 @@ services:
     restart: unless-stopped
     environment:
       USERS_PORT: ${USERS_PORT}
-      MONGO_URI: mongodb://${MONGO_ROOT_USER}:${MONGO_ROOT_PASSWORD}@mongo:27017/?authSource=admin
-      SMTP_HOST: mailpit
-      SMTP_PORT: "1025"
+      MONGO_URI: ${MONGO_URI}
+      SMTP_HOST: ${SMTP_HOST}
+      SMTP_PORT: ${SMTP_PORT}
+      MAIL_FROM: ${MAIL_FROM}
       CLIENT_BASE_URL: ${CLIENT_BASE_URL}
       DEFAULT_QUOTA_BYTES: ${DEFAULT_QUOTA_BYTES}
       CONFIRM_TTL: ${CONFIRM_TTL}
@@ -70,11 +71,13 @@ services:
       dockerfile: services/gateway/Dockerfile
     restart: unless-stopped
     environment:
-      GATEWAY_PORT: ${GATEWAY_PORT:-8080}
-      USERS_SERVICE_URL: http://users:${USERS_PORT:-8081}
+      GATEWAY_PORT: ${GATEWAY_PORT}
+      USERS_SERVICE_URL: ${USERS_SERVICE_URL}
+      FILES_SERVICE_URL: ${FILES_SERVICE_URL}
+      NOTIFICATIONS_SERVICE_URL: ${NOTIFICATIONS_SERVICE_URL}
       CLIENT_DIR: /client
     ports:
-      - "127.0.0.1:${GATEWAY_PORT:-8080}:8080"
+      - "127.0.0.1:${GATEWAY_PORT}:${GATEWAY_PORT}"
     depends_on:
       - users
 
