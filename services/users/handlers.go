@@ -25,9 +25,13 @@ type Server struct {
 	confirmTTL    time.Duration
 
 	jwtKey         ed25519.PrivateKey
+	jwtPub         ed25519.PublicKey
 	jwtTTL         time.Duration
 	otpTTL         time.Duration
 	passwordMaxAge time.Duration
+	passwordMinAge time.Duration
+	resetTTL       time.Duration
+	magicTTL       time.Duration
 	maxFailures    int
 	lockoutFor     time.Duration
 	dummyHash      []byte
@@ -38,6 +42,11 @@ func (s *Server) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /confirm", s.handleConfirm)
 	mux.HandleFunc("POST /login", s.handleLogin)
 	mux.HandleFunc("POST /login/verify", s.handleLoginVerify)
+	mux.HandleFunc("POST /password/change", s.handleChangePassword)
+	mux.HandleFunc("POST /password/forgot", s.handleForgotPassword)
+	mux.HandleFunc("POST /password/reset", s.handleResetPassword)
+	mux.HandleFunc("POST /magic/request", s.handleMagicRequest)
+	mux.HandleFunc("POST /magic/login", s.handleMagicLogin)
 }
 
 func decodeJSON(w http.ResponseWriter, r *http.Request, dst any) error {

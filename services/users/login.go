@@ -34,6 +34,26 @@ func (s *Server) passwordExpired(u *User) bool {
 	return time.Since(u.PasswordChangedAt) > s.passwordMaxAge
 }
 
+func (s *Server) writeSession(w http.ResponseWriter, user *User, method string) {
+	token, err := platform.SignToken(s.jwtKey, user.ID.Hex(), user.Role, s.jwtTTL)
+	if err != nil {
+		s.internalError(w, "sign token failed", err)
+		return
+	}
+	s.logger.Info("login attempt", "success", true, "method", method, "userId", user.ID.Hex())
+	platform.WriteJSON(w, http.StatusOK, map[string]any{
+		"token":     token,
+		"expiresIn": int(s.jwtTTL.Seconds()),
+		"user": map[string]string{
+			"id":        user.ID.Hex(),
+			"firstName": user.FirstName,
+			"lastName":  user.LastName,
+			"email":     user.Email,
+			"role":      user.Role,
+		},
+	})
+}
+
 func (s *Server) handleLogin(w http.ResponseWriter, r *http.Request) {
 	var req loginRequest
 	if err := decodeJSON(w, r, &req); err != nil {
@@ -167,21 +187,5 @@ func (s *Server) handleLoginVerify(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	token, err := platform.SignToken(s.jwtKey, user.ID.Hex(), user.Role, s.jwtTTL)
-	if err != nil {
-		s.internalError(w, "sign token failed", err)
-		return
-	}
-	s.logger.Info("login attempt", "success", true, "userId", user.ID.Hex())
-	platform.WriteJSON(w, http.StatusOK, map[string]any{
-		"token":     token,
-		"expiresIn": int(s.jwtTTL.Seconds()),
-		"user": map[string]string{
-			"id":        user.ID.Hex(),
-			"firstName": user.FirstName,
-			"lastName":  user.LastName,
-			"email":     user.Email,
-			"role":      user.Role,
-		},
-	})
+	s.writeSession(w, user, "otp")
 }
