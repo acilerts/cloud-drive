@@ -35,6 +35,9 @@ type Server struct {
 	maxFailures    int
 	lockoutFor     time.Duration
 	dummyHash      []byte
+
+	internalToken string
+	quotaMax      int64
 }
 
 func (s *Server) Routes(mux *http.ServeMux) {

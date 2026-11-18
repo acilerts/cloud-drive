@@ -97,6 +97,17 @@ func run(logger *slog.Logger) error {
 	if err != nil {
 		return err
 	}
+	internalToken, err := platform.Required("INTERNAL_API_TOKEN")
+	if err != nil {
+		return err
+	}
+	if len(internalToken) < 32 {
+		return fmt.Errorf("INTERNAL_API_TOKEN must be at least 32 characters")
+	}
+	quotaMax, err := strconv.ParseInt(platform.Default("QUOTA_MAX_BYTES", "107374182400"), 10, 64)
+	if err != nil || quotaMax < quota {
+		return fmt.Errorf("invalid QUOTA_MAX_BYTES")
+	}
 	maxFailures, err := platform.Int("MAX_LOGIN_FAILURES", 5)
 	if err != nil {
 		return err
@@ -135,6 +146,10 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure indexes: %w", err)
 	}
 
+	if err := store.EnsureQuotaIndexes(idxCtx); err != nil {
+		return fmt.Errorf("ensure quota indexes: %w", err)
+	}
+
 	app := &Server{
 		store:          store,
 		mailer:         &Mailer{host: smtpHost, port: smtpPort, from: mailFrom},
@@ -153,6 +168,8 @@ func run(logger *slog.Logger) error {
 		maxFailures:    maxFailures,
 		lockoutFor:     lockoutFor,
 		dummyHash:      dummyHash,
+		internalToken:  internalToken,
+		quotaMax:       quotaMax,
 	}
 
 	if adminEmail != "" {
@@ -168,6 +185,7 @@ func run(logger *slog.Logger) error {
 		return client.Ping(ctx, readpref.Primary())
 	}))
 	app.Routes(mux)
+	app.QuotaRoutes(mux)
 
 	srv := &http.Server{
 		Addr:              ":" + port,
