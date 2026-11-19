@@ -112,6 +112,10 @@ func (handler *Handler) authenticate(
 		return bson.NilObjectID, errors.New("invalid token")
 	}
 
+	if claims.Role != "user" {
+		return bson.ObjectID{}, errors.New("user role required")
+	}
+
 	userID, err := bson.ObjectIDFromHex(claims.Subject)
 	if err != nil {
 		return bson.NilObjectID, errors.New("invalid user ID in token")

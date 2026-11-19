@@ -15,11 +15,30 @@ var (
 	ErrParentNotFound    = errors.New("parent folder not found")
 )
 
-type Service struct {
-	repository *Repository
+type folderRepository interface {
+	CreateFolder(ctx context.Context, folder *Folder) error
+	FindFolderByID(
+		ctx context.Context,
+		folderID bson.ObjectID,
+		ownerID bson.ObjectID,
+	) (*Folder, error)
 }
 
-func NewService(repository *Repository) *Service {
+type FolderRepository interface {
+	CreateFolder(ctx context.Context, folder *Folder) error
+
+	FindFolderByID(
+		ctx context.Context,
+		folderID bson.ObjectID,
+		ownerID bson.ObjectID,
+	) (*Folder, error)
+}
+
+type Service struct {
+	repository FolderRepository
+}
+
+func NewService(repository FolderRepository) *Service {
 	return &Service{
 		repository: repository,
 	}
