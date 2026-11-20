@@ -72,6 +72,26 @@ services:
       mailpit:
         condition: service_started
 
+
+  files:
+    build:
+      context: .
+      dockerfile: services/files/Dockerfile
+    restart: unless-stopped
+    environment:
+      FILES_PORT: ${FILES_PORT}
+      MONGO_URI: ${MONGO_URI}
+      FILES_MONGO_DB: ${FILES_MONGO_DB}
+      JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
+    volumes:
+      - ./keys/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    ports:
+      - "127.0.0.1:${FILES_PORT}:${FILES_PORT}"
+    depends_on:
+      mongo:
+        condition: service_healthy
+
+
   gateway:
     build:
       context: .
