@@ -15,15 +15,6 @@ var (
 	ErrParentNotFound    = errors.New("parent folder not found")
 )
 
-type folderRepository interface {
-	CreateFolder(ctx context.Context, folder *Folder) error
-	FindFolderByID(
-		ctx context.Context,
-		folderID bson.ObjectID,
-		ownerID bson.ObjectID,
-	) (*Folder, error)
-}
-
 type FolderRepository interface {
 	CreateFolder(ctx context.Context, folder *Folder) error
 
@@ -32,6 +23,12 @@ type FolderRepository interface {
 		folderID bson.ObjectID,
 		ownerID bson.ObjectID,
 	) (*Folder, error)
+
+	FindFolders(
+		ctx context.Context,
+		ownerID bson.ObjectID,
+		parentID *bson.ObjectID,
+	) ([]Folder, error)
 }
 
 type Service struct {
@@ -92,4 +89,36 @@ func (service *Service) CreateFolder(
 	}
 
 	return folder, nil
+}
+
+func (service *Service) ListFolders(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) ([]Folder, error) {
+	if ownerID.IsZero() {
+		return nil, errors.New("invalid folder owner")
+	}
+
+	if parentID != nil {
+		_, err := service.repository.FindFolderByID(
+			ctx,
+			*parentID,
+			ownerID,
+		)
+
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				return nil, ErrParentNotFound
+			}
+
+			return nil, err
+		}
+	}
+
+	return service.repository.FindFolders(
+		ctx,
+		ownerID,
+		parentID,
+	)
 }

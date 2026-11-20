@@ -77,3 +77,38 @@ func (repository *Repository) FindFolderByID(
 
 	return &folder, nil
 }
+
+func (repository *Repository) FindFolders(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) ([]Folder, error) {
+	filter := bson.M{
+		"ownerId":  ownerID,
+		"parentId": parentID,
+	}
+
+	cursor, err := repository.folders.Find(
+		ctx,
+		filter,
+		options.Find().SetSort(bson.D{
+			{Key: "name", Value: 1},
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find folders: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var folders []Folder
+
+	if err := cursor.All(ctx, &folders); err != nil {
+		return nil, fmt.Errorf("decode folders: %w", err)
+	}
+
+	if folders == nil {
+		folders = []Folder{}
+	}
+
+	return folders, nil
+}

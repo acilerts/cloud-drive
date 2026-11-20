@@ -32,6 +32,7 @@ type createFolderRequest struct {
 
 func (handler *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /folders", handler.createFolder)
+	mux.HandleFunc("GET /folders", handler.listFolders)
 }
 
 func (handler *Handler) createFolder(
@@ -122,4 +123,48 @@ func (handler *Handler) authenticate(
 	}
 
 	return userID, nil
+}
+
+func (handler *Handler) listFolders(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var parentID *bson.ObjectID
+
+	parentIDValue := r.URL.Query().Get("parentId")
+
+	if parentIDValue != "" {
+		id, err := bson.ObjectIDFromHex(parentIDValue)
+		if err != nil {
+			platform.WriteError(w, http.StatusBadRequest, "invalid parentId")
+			return
+		}
+
+		parentID = &id
+	}
+
+	folders, err := handler.service.ListFolders(
+		r.Context(),
+		ownerID,
+		parentID,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrParentNotFound):
+			platform.WriteError(w, http.StatusNotFound, "parent folder not found")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not list folders")
+		}
+
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusOK, folders)
 }
