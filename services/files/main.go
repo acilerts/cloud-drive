@@ -57,6 +57,44 @@ func run(logger *slog.Logger) error {
 	)
 	defer stop()
 
+	minioEndpoint, err := platform.Required("MINIO_ENDPOINT")
+	if err != nil {
+		return err
+	}
+
+	minioAccessKey, err := platform.Required("MINIO_ACCESS_KEY")
+	if err != nil {
+		return err
+	}
+
+	minioSecretKey, err := platform.Required("MINIO_SECRET_KEY")
+	if err != nil {
+		return err
+	}
+
+	minioBucket := platform.Default("MINIO_BUCKET", "cloud-drive")
+
+	usersServiceURL, err := platform.Required("USERS_SERVICE_URL")
+	if err != nil {
+		return err
+	}
+
+	internalAPIToken, err := platform.Required("INTERNAL_API_TOKEN")
+	if err != nil {
+		return err
+	}
+
+	objectStore, err := NewObjectStore(
+		ctx,
+		minioEndpoint,
+		minioAccessKey,
+		minioSecretKey,
+		minioBucket,
+	)
+	if err != nil {
+		return fmt.Errorf("initialize object storage: %w", err)
+	}
+
 	client, err := mongo.Connect(
 		options.Client().ApplyURI(mongoURI),
 	)
@@ -90,7 +128,9 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure indexes: %w", err)
 	}
 
-	service := NewService(repository)
+	quotaClient := NewQuotaClient(usersServiceURL, internalAPIToken)
+
+	service := NewServiceWithDependencies(repository, objectStore, quotaClient)
 	handler := NewHandler(service, publicKey)
 
 	mux := http.NewServeMux()

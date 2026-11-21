@@ -5,12 +5,18 @@ import (
 	"errors"
 	"io"
 	"net/http"
+	"path/filepath"
 	"strings"
 
 	"crypto/ed25519"
 
 	"github.com/acilerts/cloud-drive/internal/platform"
 	"go.mongodb.org/mongo-driver/v2/bson"
+)
+
+const (
+	maxUploadSize = 50 << 20 // 50 MiB
+	maxFormMemory = 10 << 20 // 10 MiB
 )
 
 type Handler struct {
@@ -33,6 +39,7 @@ type createFolderRequest struct {
 func (handler *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /folders", handler.createFolder)
 	mux.HandleFunc("GET /folders", handler.listFolders)
+	mux.HandleFunc("POST /files", handler.uploadFile)
 }
 
 func (handler *Handler) createFolder(
@@ -167,4 +174,129 @@ func (handler *Handler) listFolders(
 	}
 
 	platform.WriteJSON(w, http.StatusOK, folders)
+}
+
+func (handler *Handler) uploadFile(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize+(1<<20))
+
+	if err := r.ParseMultipartForm(maxFormMemory); err != nil {
+		var maxBytesError *http.MaxBytesError
+
+		if errors.As(err, &maxBytesError) {
+			platform.WriteError(w, http.StatusRequestEntityTooLarge, "request too large")
+			return
+		}
+
+		platform.WriteError(w, http.StatusBadRequest, "invalid multipart request")
+		return
+	}
+
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+
+	fileHeaders := r.MultipartForm.File["file"]
+
+	if len(fileHeaders) != 1 {
+		platform.WriteError(w, http.StatusBadRequest, "exactly one file is required")
+		return
+	}
+
+	fileHeader := fileHeaders[0]
+
+	if fileHeader.Size > maxUploadSize {
+		platform.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+
+	name := strings.TrimSpace(fileHeader.Filename)
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+
+	if name == "" || name == "." {
+		platform.WriteError(w, http.StatusBadRequest, "invalid file name")
+		return
+	}
+
+	var parentID *bson.ObjectID
+
+	parentValues := r.MultipartForm.Value["parentId"]
+
+	if len(parentValues) > 1 {
+		platform.WriteError(w, http.StatusBadRequest, "invalid parentId")
+		return
+	}
+
+	if len(parentValues) == 1 && parentValues[0] != "" {
+		id, err := bson.ObjectIDFromHex(parentValues[0])
+		if err != nil {
+			platform.WriteError(w, http.StatusBadRequest, "invalid parentId")
+			return
+		}
+
+		parentID = &id
+	}
+
+	uploadedFile, err := fileHeader.Open()
+	if err != nil {
+		platform.WriteError(w, http.StatusInternalServerError, "could not read uploaded file")
+		return
+	}
+	defer uploadedFile.Close()
+
+	sample := make([]byte, 512)
+	n, readErr := io.ReadFull(uploadedFile, sample)
+
+	if readErr != nil && !errors.Is(readErr, io.EOF) &&
+		!errors.Is(readErr, io.ErrUnexpectedEOF) {
+		platform.WriteError(w, http.StatusBadRequest, "could not read uploaded file")
+		return
+	}
+
+	contentType := http.DetectContentType(sample[:n])
+
+	if _, err := uploadedFile.Seek(0, io.SeekStart); err != nil {
+		platform.WriteError(w, http.StatusInternalServerError, "could not process uploaded file")
+		return
+	}
+
+	objectKey := ownerID.Hex() + "/" + bson.NewObjectID().Hex()
+
+	file, err := handler.service.UploadFile(
+		r.Context(),
+		ownerID,
+		name,
+		parentID,
+		objectKey,
+		uploadedFile,
+		fileHeader.Size,
+		contentType,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidFileName):
+			platform.WriteError(w, http.StatusBadRequest, "invalid file name")
+
+		case errors.Is(err, ErrInvalidFileSize):
+			platform.WriteError(w, http.StatusBadRequest, "invalid file size")
+
+		case errors.Is(err, ErrParentNotFound):
+			platform.WriteError(w, http.StatusNotFound, "parent folder not found")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not upload file")
+		}
+
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusCreated, file)
 }
