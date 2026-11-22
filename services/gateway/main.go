@@ -222,7 +222,6 @@ func newGatewayHandler(cfg *Config, logger *slog.Logger) http.Handler {
 	}
 
 	absClientDir, _ := filepath.Abs(cfg.ClientDir)
-	fileServer := http.FileServer(http.Dir(cfg.ClientDir))
 
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		setSecurityHeaders(w, r)
@@ -256,13 +255,18 @@ func newGatewayHandler(cfg *Config, logger *slog.Logger) http.Handler {
 		}
 
 		// Serviranje klijentskih statickih fajlova ako fajl postoji unutar ClientDir
+		// Koristimo ServeContent umesto FileServer/ServeFile kako /index.html ne bi radio 301 redirect na /
 		cleanRel := filepath.Clean(strings.TrimPrefix(path, "/"))
 		candidate := filepath.Join(absClientDir, cleanRel)
 		if rel, err := filepath.Rel(absClientDir, candidate); err == nil &&
 			rel != "." && !strings.HasPrefix(rel, "..") {
-			if info, err := os.Stat(candidate); err == nil && !info.IsDir() {
-				fileServer.ServeHTTP(w, r)
-				return
+			if f, err := os.Open(candidate); err == nil {
+				if info, statErr := f.Stat(); statErr == nil && !info.IsDir() {
+					http.ServeContent(w, r, info.Name(), info.ModTime(), f)
+					_ = f.Close()
+					return
+				}
+				_ = f.Close()
 			}
 		}
 

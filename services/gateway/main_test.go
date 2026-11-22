@@ -37,6 +37,9 @@ func newTestGateway(t *testing.T, rps, burst, authRPM int) (http.Handler, *strin
 	if err := os.WriteFile(filepath.Join(clientDir, "login.html"), []byte("<h1>Login</h1>"), 0o644); err != nil {
 		t.Fatal(err)
 	}
+	if err := os.WriteFile(filepath.Join(clientDir, "index.html"), []byte("<h1>Drive</h1>"), 0o644); err != nil {
+		t.Fatal(err)
+	}
 
 	uURL, _ := url.Parse(usersSrv.URL)
 	fURL, _ := url.Parse(filesSrv.URL)
@@ -69,6 +72,7 @@ func TestGatewayRouting(t *testing.T) {
 		{"GET", "/health", http.StatusOK, ""},
 		{"GET", "/", http.StatusFound, ""},
 		{"GET", "/login.html", http.StatusOK, ""},
+		{"GET", "/index.html", http.StatusOK, ""},
 		{"POST", "/register", http.StatusOK, "users:/register"},
 		{"POST", "/confirm", http.StatusOK, "users:/confirm"},
 		{"POST", "/login", http.StatusOK, "users:/login"},
