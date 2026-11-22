@@ -10,28 +10,65 @@ import (
 )
 
 type Repository struct {
-	folders *mongo.Collection
+	folders      *mongo.Collection
+	files        *mongo.Collection
+	fileVersions *mongo.Collection
 }
 
 func NewRepository(database *mongo.Database) *Repository {
 	return &Repository{
-		folders: database.Collection("folders"),
+		folders:      database.Collection("folders"),
+		files:        database.Collection("files"),
+		fileVersions: database.Collection("file_versions"),
 	}
 }
 
 func (repository *Repository) EnsureIndexes(ctx context.Context) error {
-	_, err := repository.folders.Indexes().CreateOne(
-		ctx,
-		mongo.IndexModel{
-			Keys: bson.D{
-				{Key: "ownerId", Value: 1},
-				{Key: "parentId", Value: 1},
+	indexes := []struct {
+		collection *mongo.Collection
+		model      mongo.IndexModel
+		name       string
+	}{
+		{
+			collection: repository.folders,
+			model: mongo.IndexModel{
+				Keys: bson.D{
+					{Key: "ownerId", Value: 1},
+					{Key: "parentId", Value: 1},
+				},
+				Options: options.Index().SetName("owner_parent_idx"),
 			},
-			Options: options.Index().SetName("owner_parent_idx"),
+			name: "folders",
 		},
-	)
-	if err != nil {
-		return fmt.Errorf("create folders index: %w", err)
+		{
+			collection: repository.files,
+			model: mongo.IndexModel{
+				Keys: bson.D{
+					{Key: "ownerId", Value: 1},
+					{Key: "parentId", Value: 1},
+				},
+				Options: options.Index().SetName("owner_parent_idx"),
+			},
+			name: "files",
+		},
+		{
+			collection: repository.fileVersions,
+			model: mongo.IndexModel{
+				Keys: bson.D{
+					{Key: "fileId", Value: 1},
+					{Key: "versionNumber", Value: 1},
+				},
+				Options: options.Index().SetName("file_version_idx").SetUnique(true),
+			},
+			name: "file_versions",
+		},
+	}
+
+	for _, index := range indexes {
+		_, err := index.collection.Indexes().CreateOne(ctx, index.model)
+		if err != nil {
+			return fmt.Errorf("create %s index: %w", index.name, err)
+		}
 	}
 
 	return nil
@@ -111,4 +148,100 @@ func (repository *Repository) FindFolders(
 	}
 
 	return folders, nil
+}
+
+func (repository *Repository) CreateFile(
+	ctx context.Context,
+	file *File,
+) error {
+	result, err := repository.files.InsertOne(ctx, file)
+	if err != nil {
+		return fmt.Errorf("insert file: %w", err)
+	}
+
+	id, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		return fmt.Errorf("unexpected inserted file ID type")
+	}
+
+	file.ID = id
+
+	return nil
+}
+
+func (repository *Repository) CreateFileVersion(
+	ctx context.Context,
+	version *FileVersion,
+) error {
+	result, err := repository.fileVersions.InsertOne(ctx, version)
+	if err != nil {
+		return fmt.Errorf("insert file version: %w", err)
+	}
+
+	id, ok := result.InsertedID.(bson.ObjectID)
+	if !ok {
+		return fmt.Errorf("unexpected inserted file version ID type")
+	}
+
+	version.ID = id
+
+	return nil
+}
+
+func (repository *Repository) DeleteFile(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) error {
+	_, err := repository.files.DeleteOne(ctx, bson.M{
+		"_id":     fileID,
+		"ownerId": ownerID,
+	})
+
+	if err != nil {
+		return fmt.Errorf("delete file: %w", err)
+	}
+
+	return nil
+}
+
+func (repository *Repository) DeleteFileAndVersions(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) error {
+	var file File
+
+	err := repository.files.FindOne(
+		ctx,
+		bson.M{
+			"_id":     fileID,
+			"ownerId": ownerID,
+		},
+	).Decode(&file)
+
+	if err != nil {
+		return fmt.Errorf("find file before deletion: %w", err)
+	}
+
+	_, err = repository.fileVersions.DeleteMany(ctx, bson.M{
+		"fileId": fileID,
+	})
+	if err != nil {
+		return fmt.Errorf("delete file versions: %w", err)
+	}
+
+	result, err := repository.files.DeleteOne(ctx, bson.M{
+		"_id":     fileID,
+		"ownerId": ownerID,
+	})
+	if err != nil {
+		return fmt.Errorf("delete file: %w", err)
+	}
+
+	if result.DeletedCount != 1 {
+		return fmt.Errorf("file was not deleted")
+	}
+
+	return nil
 }

@@ -83,6 +83,12 @@ services:
       MONGO_URI: ${MONGO_URI}
       FILES_MONGO_DB: ${FILES_MONGO_DB}
       JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
+      MINIO_ENDPOINT: minio:9000
+      MINIO_ACCESS_KEY: ${MINIO_ROOT_USER}
+      MINIO_SECRET_KEY: ${MINIO_ROOT_PASSWORD}
+      MINIO_BUCKET: ${MINIO_BUCKET:-cloud-drive}
+      USERS_SERVICE_URL: http://users:${USERS_PORT}
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
     volumes:
       - ./keys/jwt_public.pem:/run/secrets/jwt_public.pem:ro
     ports:
@@ -90,6 +96,8 @@ services:
     depends_on:
       mongo:
         condition: service_healthy
+      minio:
+        condition: service_started
 
 
   gateway:

@@ -5,6 +5,9 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+
+	"bytes"
+	"mime/multipart"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -150,12 +153,16 @@ func TestCreateFolderWithUnknownOwnerIDField(t *testing.T) {
 }
 
 type handlerTestRepository struct {
-	folders map[bson.ObjectID]*Folder
+	folders      map[bson.ObjectID]*Folder
+	files        map[bson.ObjectID]*File
+	fileVersions map[bson.ObjectID]*FileVersion
 }
 
 func newHandlerTestRepository() *handlerTestRepository {
 	return &handlerTestRepository{
-		folders: make(map[bson.ObjectID]*Folder),
+		folders:      make(map[bson.ObjectID]*Folder),
+		files:        make(map[bson.ObjectID]*File),
+		fileVersions: make(map[bson.ObjectID]*FileVersion),
 	}
 }
 
@@ -206,6 +213,44 @@ func (repository *handlerTestRepository) FindFolders(
 	}
 
 	return folders, nil
+}
+
+func (repository *handlerTestRepository) CreateFile(
+	ctx context.Context,
+	file *File,
+) error {
+	repository.files[file.ID] = file
+	return nil
+}
+
+func (repository *handlerTestRepository) CreateFileVersion(
+	ctx context.Context,
+	version *FileVersion,
+) error {
+	repository.fileVersions[version.ID] = version
+	return nil
+}
+
+func (repository *handlerTestRepository) DeleteFile(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) error {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return nil
+	}
+
+	delete(repository.files, fileID)
+	return nil
+}
+
+func (repository *handlerTestRepository) DeleteFileAndVersions(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) error {
+	return repository.DeleteFile(ctx, fileID, ownerID)
 }
 
 func TestCreateFolderSuccessfully(t *testing.T) {
@@ -611,5 +656,476 @@ func TestListFoldersWithInvalidParentID(t *testing.T) {
 	if response.Code != http.StatusBadRequest {
 		t.Fatalf("expected status %d, got %d",
 			http.StatusBadRequest, response.Code)
+	}
+}
+
+func newUploadRequest(
+	t *testing.T,
+	token string,
+	filename string,
+	content string,
+	parentID string,
+) *http.Request {
+	t.Helper()
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	filePart, err := writer.CreateFormFile("file", filename)
+	if err != nil {
+		t.Fatalf("create multipart file: %v", err)
+	}
+
+	if _, err := filePart.Write([]byte(content)); err != nil {
+		t.Fatalf("write multipart file: %v", err)
+	}
+
+	if parentID != "" {
+		if err := writer.WriteField("parentId", parentID); err != nil {
+			t.Fatalf("write parentId: %v", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+
+	return request
+}
+
+func TestUploadFileThroughHTTPSuccessfully(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+	objectStore := newFakeObjectStorage()
+	service := NewServiceWithDependencies(repository, objectStore, newFakeQuotaManager())
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	content := "Sadrzaj test dokumenta"
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		content,
+		"",
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusCreated,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var file File
+	if err := json.NewDecoder(response.Body).Decode(&file); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if file.ID.IsZero() {
+		t.Error("expected file ID to be generated")
+	}
+
+	if file.OwnerID != userID {
+		t.Error("file owner does not match authenticated user")
+	}
+
+	if file.Name != "dokument.txt" {
+		t.Errorf("expected filename dokument.txt, got %s", file.Name)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.files) != 1 {
+		t.Errorf("expected 1 file in repository, got %d", len(repository.files))
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Fatalf(
+			"expected 1 file version in repository, got %d",
+			len(repository.fileVersions),
+		)
+	}
+
+	var storedVersion *FileVersion
+	for _, version := range repository.fileVersions {
+		storedVersion = version
+	}
+
+	if storedVersion.FileID != file.ID {
+		t.Errorf("file version references incorrect file ID")
+	}
+
+	if storedVersion.VersionNumber != 1 {
+		t.Errorf(
+			"expected version number 1, got %d",
+			storedVersion.VersionNumber,
+		)
+	}
+
+	if storedVersion.SizeBytes != int64(len(content)) {
+		t.Errorf(
+			"expected size %d, got %d",
+			len(content),
+			storedVersion.SizeBytes,
+		)
+	}
+
+	if storedVersion.ContentType != "text/plain; charset=utf-8" {
+		t.Errorf(
+			"expected content type text/plain; charset=utf-8, got %s",
+			storedVersion.ContentType,
+		)
+	}
+
+	if storedVersion.ObjectKey == "" {
+		t.Error("expected object key to be generated")
+	}
+
+	if _, exists := objectStore.objects[storedVersion.ObjectKey]; !exists {
+		t.Error("expected file version object key to exist in object storage")
+	}
+
+	if len(objectStore.objects) != 1 {
+		t.Fatalf("expected 1 object in storage, got %d", len(objectStore.objects))
+	}
+
+	var storedContent string
+	for _, value := range objectStore.objects {
+		storedContent = value
+	}
+
+	if storedContent != content {
+		t.Errorf("stored content does not match uploaded content")
+	}
+}
+
+func TestUploadFileTooLarge(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+	objectStore := newFakeObjectStorage()
+	service := NewServiceWithDependencies(
+		repository,
+		objectStore,
+		newFakeQuotaManager(),
+	)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	content := string(bytes.Repeat([]byte("a"), maxUploadSize+1))
+
+	request := newUploadRequest(
+		t,
+		token,
+		"preveliki.txt",
+		content,
+		"",
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusRequestEntityTooLarge,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if len(repository.files) != 0 {
+		t.Errorf("expected no files in repository, got %d", len(repository.files))
+	}
+
+	if len(objectStore.objects) != 0 {
+		t.Errorf("expected no objects in storage, got %d", len(objectStore.objects))
+	}
+}
+
+func TestUploadFileWithoutAuthorization(t *testing.T) {
+	handler := NewHandler(nil, nil)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := newUploadRequest(
+		t,
+		"",
+		"dokument.txt",
+		"sadrzaj",
+		"",
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Errorf(
+			"expected status %d, got %d",
+			http.StatusUnauthorized,
+			response.Code,
+		)
+	}
+}
+
+func TestUploadFileWithInvalidParentID(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+	objectStore := newFakeObjectStorage()
+	service := NewServiceWithDependencies(
+		repository,
+		objectStore,
+		newFakeQuotaManager(),
+	)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		"sadrzaj",
+		"neispravan-id",
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if len(repository.files) != 0 {
+		t.Errorf("expected no files in repository, got %d", len(repository.files))
+	}
+
+	if len(objectStore.objects) != 0 {
+		t.Errorf("expected no objects in storage, got %d", len(objectStore.objects))
+	}
+}
+
+func TestUploadFileIntoAnotherUsersFolder(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	anotherUserID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	foreignFolder := &Folder{
+		ID:        bson.NewObjectID(),
+		OwnerID:   anotherUserID,
+		Name:      "Tudji folder",
+		CreatedAt: time.Now(),
+		UpdatedAt: time.Now(),
+	}
+	repository.folders[foreignFolder.ID] = foreignFolder
+
+	objectStore := newFakeObjectStorage()
+	service := NewServiceWithDependencies(repository, objectStore, newFakeQuotaManager())
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		"sadrzaj",
+		foreignFolder.ID.Hex(),
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNotFound,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if len(repository.files) != 0 {
+		t.Errorf("expected no files in repository, got %d", len(repository.files))
+	}
+
+	if len(objectStore.objects) != 0 {
+		t.Errorf("expected uploaded object to be removed, got %d objects", len(objectStore.objects))
+	}
+}
+
+func TestUploadFileWithoutFile(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.WriteField("parentId", ""); err != nil {
+		t.Fatalf("write parentId: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Errorf(
+			"expected status %d, got %d",
+			http.StatusBadRequest,
+			response.Code,
+		)
+	}
+}
+
+func TestUploadFileWithMultipleFiles(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	for _, filename := range []string{"prvi.txt", "drugi.txt"} {
+		filePart, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatalf("create multipart file: %v", err)
+		}
+
+		if _, err := filePart.Write([]byte("test content")); err != nil {
+			t.Fatalf("write file content: %v", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
 	}
 }
