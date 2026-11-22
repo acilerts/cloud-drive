@@ -10,8 +10,37 @@ import (
 	"github.com/minio/minio-go/v7/pkg/credentials"
 )
 
+type minioClient interface {
+	BucketExists(
+		ctx context.Context,
+		bucketName string,
+	) (bool, error)
+
+	MakeBucket(
+		ctx context.Context,
+		bucketName string,
+		opts minio.MakeBucketOptions,
+	) error
+
+	PutObject(
+		ctx context.Context,
+		bucketName string,
+		objectName string,
+		reader io.Reader,
+		objectSize int64,
+		opts minio.PutObjectOptions,
+	) (minio.UploadInfo, error)
+
+	RemoveObject(
+		ctx context.Context,
+		bucketName string,
+		objectName string,
+		opts minio.RemoveObjectOptions,
+	) error
+}
+
 type ObjectStore struct {
-	client *minio.Client
+	client minioClient
 	bucket string
 }
 
@@ -34,6 +63,14 @@ func NewObjectStore(
 		return nil, fmt.Errorf("create minio client: %w", err)
 	}
 
+	return newObjectStore(ctx, client, bucket)
+}
+
+func newObjectStore(
+	ctx context.Context,
+	client minioClient,
+	bucket string,
+) (*ObjectStore, error) {
 	var lastErr error
 
 	for attempt := 1; attempt <= 30; attempt++ {

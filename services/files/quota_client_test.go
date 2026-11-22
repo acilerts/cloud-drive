@@ -201,3 +201,182 @@ func TestQuotaClientGetReservationStatusRejectsUnexpectedStatus(t *testing.T) {
 		t.Fatal("expected error for unexpected reservation status")
 	}
 }
+
+func TestQuotaClientReserveRejectsEmptyReservationID(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+
+			_ = json.NewEncoder(w).Encode(reserveQuotaResponse{
+				Status: "reserved",
+			})
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	_, err := client.Reserve(
+		t.Context(),
+		"user-123",
+		1024,
+	)
+	if err == nil {
+		t.Fatal("expected error for empty reservation ID")
+	}
+}
+
+func TestQuotaClientReserveRejectsUnexpectedStatus(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+
+			_ = json.NewEncoder(w).Encode(reserveQuotaResponse{
+				ReservationID: "reservation-123",
+				Status:        "pending",
+			})
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	_, err := client.Reserve(
+		t.Context(),
+		"user-123",
+		1024,
+	)
+	if err == nil {
+		t.Fatal("expected error for unexpected reservation status")
+	}
+}
+
+func TestQuotaClientCommitRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "reservation not found", http.StatusNotFound)
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	err := client.Commit(
+		t.Context(),
+		"user-123",
+		"reservation-123",
+	)
+	if err == nil {
+		t.Fatal("expected error when quota commit is rejected")
+	}
+}
+
+func TestQuotaClientReleaseRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "reservation not found", http.StatusNotFound)
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	err := client.Release(
+		t.Context(),
+		"user-123",
+		"reservation-123",
+	)
+	if err == nil {
+		t.Fatal("expected error when quota release is rejected")
+	}
+}
+
+func TestQuotaClientGetReservationStatusRejected(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			http.Error(w, "reservation not found", http.StatusNotFound)
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	_, err := client.GetReservationStatus(
+		t.Context(),
+		"user-123",
+		"reservation-123",
+	)
+	if err == nil {
+		t.Fatal("expected error when quota status request is rejected")
+	}
+}
+
+func TestQuotaClientReserveRejectsInvalidJSON(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(
+		func(w http.ResponseWriter, r *http.Request) {
+			w.Header().Set("Content-Type", "application/json")
+			w.WriteHeader(http.StatusCreated)
+			_, _ = w.Write([]byte("{invalid json"))
+		},
+	))
+	defer server.Close()
+
+	client := NewQuotaClient(server.URL, "test-token")
+
+	_, err := client.Reserve(
+		t.Context(),
+		"user-123",
+		1024,
+	)
+	if err == nil {
+		t.Fatal("expected error for invalid JSON response")
+	}
+}
+
+func TestQuotaClientRejectsInvalidParameters(t *testing.T) {
+	client := NewQuotaClient("http://localhost:8081", "test-token")
+
+	t.Run("reserve with empty user ID", func(t *testing.T) {
+		_, err := client.Reserve(t.Context(), "", 1024)
+		if err == nil {
+			t.Fatal("expected error for empty user ID")
+		}
+	})
+
+	t.Run("reserve with zero bytes", func(t *testing.T) {
+		_, err := client.Reserve(t.Context(), "user-123", 0)
+		if err == nil {
+			t.Fatal("expected error for zero bytes")
+		}
+	})
+
+	t.Run("reserve with negative bytes", func(t *testing.T) {
+		_, err := client.Reserve(t.Context(), "user-123", -1)
+		if err == nil {
+			t.Fatal("expected error for negative bytes")
+		}
+	})
+
+	t.Run("commit with empty user ID", func(t *testing.T) {
+		err := client.Commit(t.Context(), "", "reservation-123")
+		if err == nil {
+			t.Fatal("expected error for empty user ID")
+		}
+	})
+
+	t.Run("release with empty reservation ID", func(t *testing.T) {
+		err := client.Release(t.Context(), "user-123", "")
+		if err == nil {
+			t.Fatal("expected error for empty reservation ID")
+		}
+	})
+
+	t.Run("status with empty reservation ID", func(t *testing.T) {
+		_, err := client.GetReservationStatus(t.Context(), "user-123", "")
+		if err == nil {
+			t.Fatal("expected error for empty reservation ID")
+		}
+	})
+}

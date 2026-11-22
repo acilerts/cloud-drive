@@ -186,6 +186,7 @@ func (service *Service) RegisterUploadedFile(
 ) (*File, error) {
 	name = strings.TrimSpace(name)
 	objectKey = strings.TrimSpace(objectKey)
+	contentType = strings.TrimSpace(contentType)
 
 	if ownerID.IsZero() {
 		return nil, errors.New("invalid file owner")
@@ -201,6 +202,10 @@ func (service *Service) RegisterUploadedFile(
 
 	if objectKey == "" {
 		return nil, ErrInvalidObjectKey
+	}
+
+	if contentType == "" {
+		return nil, errors.New("invalid file content type")
 	}
 
 	if parentID != nil {
@@ -283,8 +288,43 @@ func (service *Service) UploadFile(
 		return nil, errors.New("quota manager is not configured")
 	}
 
+	name = strings.TrimSpace(name)
+	objectKey = strings.TrimSpace(objectKey)
+
+	if ownerID.IsZero() {
+		return nil, errors.New("invalid file owner")
+	}
+
+	if name == "" {
+		return nil, ErrInvalidFileName
+	}
+
+	if objectKey == "" {
+		return nil, ErrInvalidObjectKey
+	}
+
+	if reader == nil {
+		return nil, errors.New("file content reader is nil")
+	}
+
 	if sizeBytes < 0 {
 		return nil, ErrInvalidFileSize
+	}
+
+	if parentID != nil {
+		_, err := service.repository.FindFolderByID(
+			ctx,
+			*parentID,
+			ownerID,
+		)
+
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				return nil, ErrParentNotFound
+			}
+
+			return nil, err
+		}
 	}
 
 	userID := ownerID.Hex()
@@ -300,8 +340,18 @@ func (service *Service) UploadFile(
 			return nil, fmt.Errorf("reserve storage quota: %w", err)
 		}
 
+		if reservation == "" {
+			return nil, errors.New("quota service returned an empty reservation ID")
+		}
+
 		reservationID = reservation
 	}
+
+	cleanupCtx, cancel := context.WithTimeout(
+		context.WithoutCancel(ctx),
+		10*time.Second,
+	)
+	defer cancel()
 
 	releaseReservation := func() error {
 		if reservationID == "" {
@@ -309,7 +359,7 @@ func (service *Service) UploadFile(
 		}
 
 		if err := service.quotaManager.Release(
-			ctx,
+			cleanupCtx,
 			userID,
 			reservationID,
 		); err != nil {
@@ -328,14 +378,10 @@ func (service *Service) UploadFile(
 	); err != nil {
 		releaseErr := releaseReservation()
 
-		if releaseErr != nil {
-			return nil, errors.Join(
-				fmt.Errorf("upload file content: %w", err),
-				releaseErr,
-			)
-		}
-
-		return nil, fmt.Errorf("upload file content: %w", err)
+		return nil, errors.Join(
+			fmt.Errorf("upload file content: %w", err),
+			releaseErr,
+		)
 	}
 
 	file, err := service.RegisterUploadedFile(
@@ -348,7 +394,10 @@ func (service *Service) UploadFile(
 		contentType,
 	)
 	if err != nil {
-		cleanupErr := service.objectStore.Delete(ctx, objectKey)
+		cleanupErr := service.objectStore.Delete(
+			cleanupCtx,
+			objectKey,
+		)
 		releaseErr := releaseReservation()
 
 		return nil, errors.Join(
@@ -364,21 +413,71 @@ func (service *Service) UploadFile(
 			userID,
 			reservationID,
 		); err != nil {
-			metadataCleanupErr := service.repository.DeleteFileAndVersions(
-				ctx,
-				file.ID,
-				ownerID,
+			commitErr := fmt.Errorf("commit storage quota: %w", err)
+
+			status, statusErr := service.quotaManager.GetReservationStatus(
+				cleanupCtx,
+				userID,
+				reservationID,
 			)
 
-			objectCleanupErr := service.objectStore.Delete(ctx, objectKey)
-			releaseErr := releaseReservation()
+			if statusErr != nil {
+				return nil, errors.Join(
+					commitErr,
+					fmt.Errorf("check quota reservation status: %w", statusErr),
+				)
+			}
 
-			return nil, errors.Join(
-				fmt.Errorf("commit storage quota: %w", err),
-				metadataCleanupErr,
-				objectCleanupErr,
-				releaseErr,
-			)
+			switch status {
+			case "committed":
+				return file, nil
+
+			case "reserved":
+				metadataCleanupErr := service.repository.DeleteFileAndVersions(
+					cleanupCtx,
+					file.ID,
+					ownerID,
+				)
+
+				objectCleanupErr := service.objectStore.Delete(
+					cleanupCtx,
+					objectKey,
+				)
+
+				releaseErr := releaseReservation()
+
+				return nil, errors.Join(
+					commitErr,
+					metadataCleanupErr,
+					objectCleanupErr,
+					releaseErr,
+				)
+
+			case "released":
+				metadataCleanupErr := service.repository.DeleteFileAndVersions(
+					cleanupCtx,
+					file.ID,
+					ownerID,
+				)
+
+				objectCleanupErr := service.objectStore.Delete(
+					cleanupCtx,
+					objectKey,
+				)
+
+				return nil, errors.Join(
+					commitErr,
+					metadataCleanupErr,
+					objectCleanupErr,
+				)
+
+			default:
+				return nil, fmt.Errorf(
+					"%w: unexpected reservation status %q",
+					commitErr,
+					status,
+				)
+			}
 		}
 	}
 

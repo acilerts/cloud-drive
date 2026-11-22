@@ -55,9 +55,10 @@ func newFakeFolderRepository() *fakeFolderRepository {
 }
 
 type fakeObjectStorage struct {
-	objects     map[string]string
-	uploadError error
-	deleteError error
+	objects          map[string]string
+	uploadError      error
+	deleteError      error
+	uploadContextErr error
 }
 
 func newFakeObjectStorage() *fakeObjectStorage {
@@ -75,6 +76,10 @@ func (storage *fakeObjectStorage) Upload(
 ) error {
 	if storage.uploadError != nil {
 		return storage.uploadError
+	}
+
+	if storage.uploadContextErr != nil {
+		return storage.uploadContextErr
 	}
 
 	content, err := io.ReadAll(reader)
@@ -180,20 +185,25 @@ func (repository *fakeFolderRepository) DeleteFileAndVersions(
 }
 
 type fakeQuotaManager struct {
-	reservationID string
-	reserveError  error
-	commitError   error
-	releaseError  error
+	reservationID     string
+	reserveError      error
+	commitError       error
+	releaseError      error
+	releaseContextErr error
+	statusError       error
+	reservationStatus string
 
 	reservedBytes int64
 	reserveCalls  int
 	commitCalls   int
 	releaseCalls  int
+	statusCalls   int
 }
 
 func newFakeQuotaManager() *fakeQuotaManager {
 	return &fakeQuotaManager{
-		reservationID: "test-reservation",
+		reservationID:     "test-reservation",
+		reservationStatus: "reserved",
 	}
 }
 
@@ -227,7 +237,22 @@ func (manager *fakeQuotaManager) Release(
 	reservationID string,
 ) error {
 	manager.releaseCalls++
+	manager.releaseContextErr = ctx.Err()
 	return manager.releaseError
+}
+
+func (manager *fakeQuotaManager) GetReservationStatus(
+	ctx context.Context,
+	userID string,
+	reservationID string,
+) (string, error) {
+	manager.statusCalls++
+
+	if manager.statusError != nil {
+		return "", manager.statusError
+	}
+
+	return manager.reservationStatus, nil
 }
 
 func TestCreateRootFolder(t *testing.T) {
@@ -328,14 +353,6 @@ func TestCreateFolderWithEmptyName(t *testing.T) {
 	if !errors.Is(err, ErrInvalidFolderName) {
 		t.Errorf("expected ErrInvalidFolderName, got %v", err)
 	}
-}
-
-func (manager *fakeQuotaManager) GetReservationStatus(
-	ctx context.Context,
-	userID string,
-	reservationID string,
-) (string, error) {
-	return "reserved", nil
 }
 
 func TestCreateFolderWithInvalidOwner(t *testing.T) {
@@ -591,6 +608,115 @@ func TestRegisterUploadedFile(t *testing.T) {
 	}
 }
 
+func TestRegisterUploadedFileTrimsWhitespace(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	file, err := service.RegisterUploadedFile(
+		context.Background(),
+		bson.NewObjectID(),
+		"  dokument.pdf  ",
+		nil,
+		"  uploads/test/dokument.pdf  ",
+		1024,
+		"application/pdf",
+	)
+
+	if err != nil {
+		t.Fatalf("register uploaded file: %v", err)
+	}
+
+	if file.Name != "dokument.pdf" {
+		t.Errorf("expected trimmed file name, got %q", file.Name)
+	}
+
+	for _, version := range repository.fileVersions {
+		if version.ObjectKey != "uploads/test/dokument.pdf" {
+			t.Errorf("expected trimmed object key, got %q", version.ObjectKey)
+		}
+	}
+}
+
+func TestRegisterUploadedFileRejectsEmptyContentType(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	_, err := service.RegisterUploadedFile(
+		context.Background(),
+		bson.NewObjectID(),
+		"dokument.pdf",
+		nil,
+		"uploads/test/dokument.pdf",
+		1024,
+		"",
+	)
+
+	if err == nil {
+		t.Fatal("expected error for empty content type")
+	}
+
+	if len(repository.files) != 0 {
+		t.Fatal("file should not be created")
+	}
+
+	if len(repository.fileVersions) != 0 {
+		t.Fatal("file version should not be created")
+	}
+}
+
+func TestRegisterUploadedFileRejectsInvalidSizeAndObjectKey(t *testing.T) {
+	tests := []struct {
+		name      string
+		objectKey string
+		sizeBytes int64
+	}{
+		{
+			name:      "negative file size",
+			objectKey: "uploads/test/file.pdf",
+			sizeBytes: -1,
+		},
+		{
+			name:      "empty object key",
+			objectKey: "",
+			sizeBytes: 1024,
+		},
+		{
+			name:      "whitespace object key",
+			objectKey: "   ",
+			sizeBytes: 1024,
+		},
+	}
+
+	for _, test := range tests {
+		t.Run(test.name, func(t *testing.T) {
+			repository := newFakeFolderRepository()
+			service := NewService(repository)
+
+			_, err := service.RegisterUploadedFile(
+				context.Background(),
+				bson.NewObjectID(),
+				"dokument.pdf",
+				nil,
+				test.objectKey,
+				test.sizeBytes,
+				"application/pdf",
+			)
+
+			if err == nil {
+				t.Fatal("expected validation error")
+			}
+
+			if len(repository.files) != 0 {
+				t.Error("file should not be created")
+			}
+
+			if len(repository.fileVersions) != 0 {
+				t.Error("file version should not be created")
+			}
+		})
+	}
+}
+
 func TestRegisterUploadedFileCleansUpOnVersionError(t *testing.T) {
 	repository := newFakeFolderRepository()
 	repository.versionError = errors.New("simulated version insert failure")
@@ -617,6 +743,66 @@ func TestRegisterUploadedFileCleansUpOnVersionError(t *testing.T) {
 
 	if len(repository.fileVersions) != 0 {
 		t.Errorf("expected no file versions, got %d", len(repository.fileVersions))
+	}
+}
+
+func TestUploadFileFailsWhenObjectStorageIsNotConfigured(t *testing.T) {
+	repository := newFakeFolderRepository()
+	quotaManager := newFakeQuotaManager()
+
+	service := NewServiceWithDependencies(repository, nil, quotaManager)
+
+	_, err := service.UploadFile(
+		context.Background(),
+		bson.NewObjectID(),
+		"dokument.txt",
+		nil,
+		"uploads/test/dokument.txt",
+		strings.NewReader("test"),
+		4,
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected error when object storage is not configured")
+	}
+
+	if err.Error() != "object storage is not configured" {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if quotaManager.reserveCalls != 0 {
+		t.Error("quota should not be reserved")
+	}
+}
+
+func TestUploadFileFailsWhenQuotaManagerIsNotConfigured(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+
+	service := NewServiceWithDependencies(repository, storage, nil)
+
+	_, err := service.UploadFile(
+		context.Background(),
+		bson.NewObjectID(),
+		"dokument.txt",
+		nil,
+		"uploads/test/dokument.txt",
+		strings.NewReader("test"),
+		4,
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected error when quota manager is not configured")
+	}
+
+	if err.Error() != "quota manager is not configured" {
+		t.Errorf("unexpected error: %v", err)
+	}
+
+	if len(storage.objects) != 0 {
+		t.Error("file should not be uploaded")
 	}
 }
 
@@ -675,6 +861,59 @@ func TestUploadFileSuccessfully(t *testing.T) {
 
 	if quotaManager.commitCalls != 1 {
 		t.Errorf("expected 1 quota commit, got %d", quotaManager.commitCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected 0 quota releases, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileSuccessfullyWithZeroBytes(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	objectKey := "uploads/test/empty.txt"
+
+	file, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"empty.txt",
+		nil,
+		objectKey,
+		strings.NewReader(""),
+		0,
+		"text/plain",
+	)
+	if err != nil {
+		t.Fatalf("upload empty file: %v", err)
+	}
+
+	if file == nil {
+		t.Fatal("expected file metadata")
+	}
+
+	if len(repository.files) != 1 {
+		t.Errorf("expected 1 file, got %d", len(repository.files))
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 file version, got %d", len(repository.fileVersions))
+	}
+
+	if _, exists := storage.objects[objectKey]; !exists {
+		t.Error("empty file was not uploaded to object storage")
+	}
+
+	if quotaManager.reserveCalls != 0 {
+		t.Errorf("expected 0 quota reservations, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected 0 quota commits, got %d", quotaManager.commitCalls)
 	}
 
 	if quotaManager.releaseCalls != 0 {
@@ -784,6 +1023,64 @@ func TestUploadFileReleasesQuotaWhenObjectStorageFails(t *testing.T) {
 	}
 }
 
+func TestUploadFileReleasesQuotaWhenContextIsCanceled(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	storage.uploadContextErr = context.Canceled
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+
+	ownerID := bson.NewObjectID()
+	content := "Sadrzaj test dokumenta"
+
+	_, err := service.UploadFile(
+		ctx,
+		ownerID,
+		"dokument.txt",
+		nil,
+		"uploads/test/dokument.txt",
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected context cancellation error")
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 quota reservation, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 quota release, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected 0 quota commits, got %d", quotaManager.commitCalls)
+	}
+
+	if len(repository.files) != 0 {
+		t.Errorf("expected no files, got %d", len(repository.files))
+	}
+
+	if len(storage.objects) != 0 {
+		t.Errorf("expected no objects, got %d", len(storage.objects))
+	}
+
+	if quotaManager.releaseContextErr != nil {
+		t.Errorf(
+			"expected active context during quota release, got %v",
+			quotaManager.releaseContextErr,
+		)
+	}
+}
+
 func TestUploadFileCleansUpObjectOnMetadataError(t *testing.T) {
 	repository := newFakeFolderRepository()
 	repository.versionError = errors.New("simulated version insert failure")
@@ -874,5 +1171,242 @@ func TestUploadFileReturnsReleaseErrorWhenObjectStorageFails(t *testing.T) {
 
 	if quotaManager.commitCalls != 0 {
 		t.Errorf("expected 0 quota commits, got %d", quotaManager.commitCalls)
+	}
+}
+
+func TestUploadFileKeepsFileWhenCommitSucceededDespiteError(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit response lost")
+	quotaManager.reservationStatus = "committed"
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	content := "Sadrzaj test dokumenta"
+	objectKey := "uploads/test/dokument.txt"
+
+	file, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"dokument.txt",
+		nil,
+		objectKey,
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err != nil {
+		t.Fatalf("expected successful upload, got: %v", err)
+	}
+
+	if file == nil {
+		t.Fatal("expected file to be returned")
+	}
+
+	if repository.files[file.ID] == nil {
+		t.Error("file metadata should remain stored")
+	}
+
+	if storage.objects[objectKey] != content {
+		t.Error("uploaded object should remain stored")
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no quota release, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileCleansUpWhenCommitFailedAndReservationIsReserved(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit unavailable")
+	quotaManager.reservationStatus = "reserved"
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	content := "Sadrzaj test dokumenta"
+	objectKey := "uploads/test/dokument.txt"
+
+	_, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"dokument.txt",
+		nil,
+		objectKey,
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected commit error")
+	}
+
+	if len(repository.files) != 0 {
+		t.Error("file metadata should be deleted")
+	}
+
+	if _, exists := storage.objects[objectKey]; exists {
+		t.Error("uploaded object should be deleted")
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 quota release, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileKeepsDataWhenReservationStatusCheckFails(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit unavailable")
+	quotaManager.statusError = errors.New("quota service unavailable")
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	content := "Sadrzaj test dokumenta"
+	objectKey := "uploads/test/dokument.txt"
+
+	_, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"dokument.txt",
+		nil,
+		objectKey,
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected commit and status check errors")
+	}
+
+	if len(repository.files) != 1 {
+		t.Errorf("expected file metadata to remain, got %d files", len(repository.files))
+	}
+
+	if storage.objects[objectKey] != content {
+		t.Error("uploaded object should remain stored")
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no quota release, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileCleansUpWhenReservationIsAlreadyReleased(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit unavailable")
+	quotaManager.reservationStatus = "released"
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	content := "Sadrzaj test dokumenta"
+	objectKey := "uploads/test/dokument.txt"
+
+	_, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"dokument.txt",
+		nil,
+		objectKey,
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected commit error")
+	}
+
+	if len(repository.files) != 0 {
+		t.Error("file metadata should be deleted")
+	}
+
+	if _, exists := storage.objects[objectKey]; exists {
+		t.Error("uploaded object should be deleted")
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no additional quota release, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileKeepsDataWhenReservationStatusIsUnexpected(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit failed")
+	quotaManager.reservationStatus = "unknown"
+
+	service := NewServiceWithDependencies(repository, storage, quotaManager)
+
+	ownerID := bson.NewObjectID()
+	content := "test file content"
+
+	file, err := service.UploadFile(
+		context.Background(),
+		ownerID,
+		"test.txt",
+		nil,
+		"uploads/test.txt",
+		strings.NewReader(content),
+		int64(len(content)),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected error for unexpected reservation status")
+	}
+
+	if file != nil {
+		t.Fatal("expected nil file")
+	}
+
+	if len(repository.files) != 1 {
+		t.Errorf("expected file metadata to be preserved, got %d files", len(repository.files))
+	}
+
+	if len(storage.objects) != 1 {
+		t.Errorf("expected uploaded object to be preserved, got %d objects", len(storage.objects))
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no quota release, got %d calls", quotaManager.releaseCalls)
 	}
 }

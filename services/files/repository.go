@@ -58,7 +58,7 @@ func (repository *Repository) EnsureIndexes(ctx context.Context) error {
 					{Key: "fileId", Value: 1},
 					{Key: "versionNumber", Value: 1},
 				},
-				Options: options.Index().SetName("file_version_idx"),
+				Options: options.Index().SetName("file_version_idx").SetUnique(true),
 			},
 			name: "file_versions",
 		},
@@ -210,19 +210,37 @@ func (repository *Repository) DeleteFileAndVersions(
 	fileID bson.ObjectID,
 	ownerID bson.ObjectID,
 ) error {
-	_, err := repository.fileVersions.DeleteMany(ctx, bson.M{
+	var file File
+
+	err := repository.files.FindOne(
+		ctx,
+		bson.M{
+			"_id":     fileID,
+			"ownerId": ownerID,
+		},
+	).Decode(&file)
+
+	if err != nil {
+		return fmt.Errorf("find file before deletion: %w", err)
+	}
+
+	_, err = repository.fileVersions.DeleteMany(ctx, bson.M{
 		"fileId": fileID,
 	})
 	if err != nil {
 		return fmt.Errorf("delete file versions: %w", err)
 	}
 
-	_, err = repository.files.DeleteOne(ctx, bson.M{
+	result, err := repository.files.DeleteOne(ctx, bson.M{
 		"_id":     fileID,
 		"ownerId": ownerID,
 	})
 	if err != nil {
 		return fmt.Errorf("delete file: %w", err)
+	}
+
+	if result.DeletedCount != 1 {
+		return fmt.Errorf("file was not deleted")
 	}
 
 	return nil
