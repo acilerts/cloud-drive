@@ -36,6 +36,8 @@
 
                 <div class="auth-links">
                     <a href="#" id="forgotPwLink">Zaboravili ste lozinku?</a>
+                    &middot;
+                    <a href="#" id="magicLinkOpen">Prijava magicnim linkom</a>
                 </div>
                 <div class="auth-links" style="margin-top: 8px;">
                     Nemate nalog? <a href="register.html">Registrujte se</a>
@@ -53,11 +55,30 @@
                         <label for="resetEmail">Imejl adresa</label>
                         <input type="email" id="resetEmail" required>
                     </div>
-                    <button type="submit" id="resetBtn" class="btn btn-primary">Posalji link</button>
+                    <button type="submit" id="resetBtn" class="btn btn-primary">Posalji link za reset</button>
                 </form>
 
                 <div class="auth-links">
                     <a href="#" id="backFromResetBtn">Nazad na prijavu</a>
+                </div>
+            </div>
+
+            <div id="magicStep" style="display: none;">
+                <h1>Prijava magicnim linkom</h1>
+                <p class="subtitle">Unesite imejl adresu i poslacemo vam jednokratni link za prijavu bez lozinke</p>
+
+                <div id="magicMsg" class="msg-box"></div>
+
+                <form id="magicForm">
+                    <div class="form-field">
+                        <label for="magicEmail">Imejl adresa</label>
+                        <input type="email" id="magicEmail" required>
+                    </div>
+                    <button type="submit" id="magicBtn" class="btn btn-primary">Posalji magicni link</button>
+                </form>
+
+                <div class="auth-links">
+                    <a href="#" id="backFromMagicBtn">Nazad na prijavu</a>
                 </div>
             </div>
 

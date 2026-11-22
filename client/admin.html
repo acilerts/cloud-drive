@@ -1,0 +1,120 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Administracija - Cloud Drive</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <header class="topbar">
+        <div class="logo">
+            <div class="logo-mark">CD</div>
+            <span>Cloud Drive &middot; Admin</span>
+        </div>
+
+        <div class="topbar-actions">
+            <a href="index.html" class="btn btn-outline btn-sm">Drive prikaz</a>
+            <button id="openChangePwBtn" class="btn btn-outline btn-sm">Promena lozinke</button>
+            <div class="user-pill">
+                <div id="userAvatar" class="avatar">A</div>
+                <span id="userName">Administrator</span>
+            </div>
+            <button id="logoutBtn" class="btn btn-outline btn-sm">Odjava</button>
+        </div>
+    </header>
+
+    <div class="layout">
+        <aside class="sidebar">
+            <ul class="menu">
+                <li class="active" data-section="requests">Zahtevi za kvotu</li>
+                <li data-section="users">Korisnici i kvote</li>
+            </ul>
+        </aside>
+
+        <main class="main-area">
+            <div id="adminMsg" class="msg-box"></div>
+
+            <div id="view-requests">
+                <div class="section-header">
+                    <div class="path-bar" style="margin-bottom: 0;">
+                        <span class="current">Zahtevi za povecanje kvote</span>
+                    </div>
+                    <div class="filter-group">
+                        <button class="btn btn-outline btn-sm filter-btn active" data-status="pending">Na cekanju</button>
+                        <button class="btn btn-outline btn-sm filter-btn" data-status="approved">Odobreni</button>
+                        <button class="btn btn-outline btn-sm filter-btn" data-status="rejected">Odbijeni</button>
+                    </div>
+                </div>
+
+                <div class="table-wrap" style="margin-top: 16px;">
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>Korisnik (imejl)</th>
+                                <th>Trenutna kvota</th>
+                                <th>Trazena kvota</th>
+                                <th>Status</th>
+                                <th>Podneto</th>
+                                <th style="text-align: right;">Akcije</th>
+                            </tr>
+                        </thead>
+                        <tbody id="requestsBody"></tbody>
+                    </table>
+                </div>
+            </div>
+
+            <div id="view-users" style="display: none;">
+                <div class="section-header">
+                    <div class="path-bar" style="margin-bottom: 0;">
+                        <span class="current">Svi korisnici i kvote</span>
+                    </div>
+                    <button id="refreshUsersBtn" class="btn btn-outline btn-sm">Osvezi</button>
+                </div>
+
+                <div class="table-wrap" style="margin-top: 16px;">
+                    <table class="files-table">
+                        <thead>
+                            <tr>
+                                <th>Ime i prezime</th>
+                                <th>Imejl</th>
+                                <th>Uloga</th>
+                                <th>Status</th>
+                                <th>Kvota</th>
+                                <th>Zauzece</th>
+                            </tr>
+                        </thead>
+                        <tbody id="usersBody"></tbody>
+                    </table>
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <div class="modal-bg" id="changePwModal">
+        <div class="modal">
+            <h3>Promena lozinke</h3>
+            <div id="changePwMsg" class="msg-box"></div>
+            <div class="form-field">
+                <label for="oldPwInput">Trenutna lozinka</label>
+                <input type="password" id="oldPwInput">
+            </div>
+            <div class="form-field">
+                <label for="newPwInput">Nova lozinka (min 10 karaktera)</label>
+                <input type="password" id="newPwInput">
+            </div>
+            <div class="form-field">
+                <label for="repeatNewPwInput">Ponovite novu lozinku</label>
+                <input type="password" id="repeatNewPwInput">
+            </div>
+            <div class="modal-footer">
+                <button class="btn btn-outline close-modal">Otkazi</button>
+                <button id="saveChangePwBtn" class="btn btn-primary" style="width: auto;">Promeni</button>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/admin.js"></script>
+</body>
+</html>

@@ -1,0 +1,54 @@
+<!DOCTYPE html>
+<html lang="sr">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Reset lozinke - Cloud Drive</title>
+    <link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+    <div class="auth-page">
+        <div class="auth-box">
+            <div class="logo">
+                <div class="logo-mark">CD</div>
+                <span>Cloud Drive</span>
+            </div>
+
+            <h1>Postavljanje nove lozinke</h1>
+            <p class="subtitle">Unesite novu jaku lozinku za vas nalog</p>
+
+            <div id="msgBox" class="msg-box"></div>
+
+            <form id="resetPwForm">
+                <div class="form-field">
+                    <label for="password">Nova lozinka</label>
+                    <input type="password" id="password" name="password" required>
+                    <div id="err-password" class="err-text"></div>
+                    <ul class="pw-rules">
+                        <li id="rule-len">Najmanje 10 karaktera</li>
+                        <li id="rule-upper">Jedno veliko slovo (A-Z)</li>
+                        <li id="rule-lower">Jedno malo slovo (a-z)</li>
+                        <li id="rule-digit">Jedna cifra (0-9)</li>
+                        <li id="rule-spec">Jedan specijalni karakter</li>
+                    </ul>
+                </div>
+
+                <div class="form-field">
+                    <label for="passwordRepeat">Ponovite novu lozinku</label>
+                    <input type="password" id="passwordRepeat" name="passwordRepeat" required>
+                    <div id="err-passwordRepeat" class="err-text"></div>
+                </div>
+
+                <button type="submit" id="submitBtn" class="btn btn-primary">Sacuvaj novu lozinku</button>
+            </form>
+
+            <div id="loginLinkWrap" class="auth-links" style="margin-top: 16px;">
+                <a href="login.html">Nazad na prijavu</a>
+            </div>
+        </div>
+    </div>
+
+    <script src="js/api.js"></script>
+    <script src="js/reset.js"></script>
+</body>
+</html>

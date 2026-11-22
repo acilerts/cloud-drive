@@ -552,3 +552,58 @@ a:hover {
     color: #94a3b8;
     margin-top: 3px;
 }
+
+.section-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    flex-wrap: wrap;
+}
+
+.filter-group {
+    display: flex;
+    gap: 6px;
+}
+
+.filter-btn.active {
+    background-color: #2563eb;
+    border-color: #2563eb;
+    color: #fff;
+}
+
+.status-pill {
+    display: inline-block;
+    padding: 3px 9px;
+    border-radius: 12px;
+    font-size: 12px;
+    font-weight: 600;
+}
+
+.status-pending {
+    background: #fef3c7;
+    color: #92400e;
+}
+
+.status-approved,
+.status-active {
+    background: #dcfce7;
+    color: #166534;
+}
+
+.status-rejected {
+    background: #fee2e2;
+    color: #991b1b;
+}
+
+.empty-cell {
+    text-align: center !important;
+    color: #64748b;
+    padding: 24px 16px !important;
+}
+
+.empty-muted {
+    color: #64748b;
+    font-size: 13px;
+    padding: 8px 0;
+}
