@@ -1,3 +1,19 @@
+const token = localStorage.getItem("token");
+const savedUser = JSON.parse(localStorage.getItem("user") || "null");
+
+if (!token) {
+    window.location.href = "login.html";
+}
+
+if (savedUser && savedUser.firstName) {
+    document.getElementById("userName").textContent = savedUser.firstName + " " + (savedUser.lastName || "");
+    document.getElementById("userAvatar").textContent = savedUser.firstName[0].toUpperCase();
+}
+if (savedUser && savedUser.role === "admin") {
+    const adminLink = document.getElementById("adminPanelLink");
+    if (adminLink) adminLink.style.display = "inline-block";
+}
+
 const folderModal = document.getElementById("folderModal");
 const uploadModal = document.getElementById("uploadModal");
 const renameModal = document.getElementById("renameModal");
@@ -6,6 +22,7 @@ const previewModal = document.getElementById("previewModal");
 const changePwModal = document.getElementById("changePwModal");
 const notifModal = document.getElementById("notifModal");
 
+const driveMsg = document.getElementById("driveMsg");
 const foldersList = document.getElementById("foldersList");
 const filesBody = document.getElementById("filesBody");
 const activityBody = document.getElementById("activityBody");
@@ -13,198 +30,75 @@ const breadcrumbsEl = document.getElementById("breadcrumbs");
 const searchInput = document.getElementById("searchInput");
 const renameInput = document.getElementById("renameInput");
 
-let currentFolderId = "root";
+const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
+
+let pathStack = [{ id: null, name: "Moji fajlovi" }];
+let currentFolders = [];
+let currentFiles = [];
+let sessionUploadedFiles = [];
 let renameTarget = null;
-let versionTargetFileId = null;
-let currentPreviewFile = null;
+let versionTargetFile = null;
 
-const maxQuotaBytes = 1073741824;
-let usedQuotaBytes = 2516582;
+let quotaBytes = 1073741824;
+let usedBytes = 0;
+let myQuotaRequests = [];
+const activities = [];
 
-const folders = [
-    { id: "f1", name: "Dokumentacija", parentId: "root" },
-    { id: "f2", name: "Projekti", parentId: "root" },
-    { id: "f3", name: "Arhiva", parentId: "f1" }
-];
-
-const files = [
-    {
-        id: "file1",
-        name: "Specifikacija.txt",
-        folderId: "root",
-        owner: "Ja",
-        updatedAt: "10.11.2026. 12:30",
-        sizeBytes: 2457600,
-        version: 1,
-        content: "Projektni zadatak: Platforma za skladistenje i deljenje fajlova."
-    },
-    {
-        id: "file2",
-        name: "beleske.txt",
-        folderId: "root",
-        owner: "Ja",
-        updatedAt: "09.11.2026. 18:15",
-        sizeBytes: 14336,
-        version: 1,
-        content: "Beleske sa sastanka tima za mikroservise i baze podataka."
-    },
-    {
-        id: "file3",
-        name: "Uputstvo.txt",
-        folderId: "f1",
-        owner: "Ja",
-        updatedAt: "10.11.2026. 10:00",
-        sizeBytes: 4096,
-        version: 1,
-        content: "Uputstvo za pokretanje kontejnera pomocu docker compose alata."
-    }
-];
-
-const activities = [
-    { action: "Otpremanje datoteke", item: "Specifikacija.txt", time: "10.11.2026. 12:30" },
-    { action: "Kreiranje foldera", item: "Dokumentacija", time: "10.11.2026. 09:15" }
-];
-
-const savedUser = JSON.parse(localStorage.getItem("user") || "null");
-if (savedUser && savedUser.firstName) {
-    document.getElementById("userName").textContent = savedUser.firstName + " " + (savedUser.lastName || "");
-    document.getElementById("userAvatar").textContent = savedUser.firstName[0].toUpperCase();
+function currentFolderId() {
+    return pathStack[pathStack.length - 1].id;
 }
 
-function nowFormatted() {
-    const d = new Date();
-    return d.toLocaleDateString("sr-RS") + " " + d.toLocaleTimeString("sr-RS", { hour: "2-digit", minute: "2-digit" });
+function showDriveMsg(text, type = "error") {
+    driveMsg.className = "msg-box " + type + " show";
+    driveMsg.textContent = text;
 }
 
-function formatSize(bytes) {
-    if (bytes >= 1048576) {
-        return (bytes / 1048576).toFixed(1) + " MB";
+function clearDriveMsg() {
+    driveMsg.className = "msg-box";
+    driveMsg.textContent = "";
+}
+
+function showModalMsg(id, text, type = "error") {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.className = "msg-box " + type + " show";
+    el.textContent = text;
+}
+
+function clearModalMsg(id) {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.className = "msg-box";
+    el.textContent = "";
+}
+
+function handleAuthError(err) {
+    if (err && err.status === 401) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "login.html";
+        return true;
     }
-    return Math.max(1, Math.round(bytes / 1024)) + " KB";
+    return false;
 }
 
 function logActivity(action, item) {
-    activities.unshift({ action, item, time: nowFormatted() });
+    activities.unshift({ action, item, time: formatDateTime(new Date().toISOString()) });
     renderActivities();
 }
 
-function updateQuotaUI() {
-    usedQuotaBytes = files.reduce((sum, f) => sum + f.sizeBytes, 0);
-    const pct = Math.min(100, Math.round((usedQuotaBytes / maxQuotaBytes) * 100));
-    document.getElementById("quotaLabel").textContent = formatSize(usedQuotaBytes) + " / 1 GB";
-    document.getElementById("quotaFill").style.width = Math.max(2, pct) + "%";
-}
-
-function buildPath(folderId) {
-    const chain = [];
-    let curr = folders.find(f => f.id === folderId);
-    while (curr) {
-        chain.unshift(curr);
-        curr = folders.find(f => f.id === curr.parentId);
-    }
-    return chain;
-}
-
-function renderBreadcrumbs() {
-    breadcrumbsEl.innerHTML = "";
-    const rootSpan = document.createElement("span");
-    rootSpan.textContent = "Moji fajlovi";
-    rootSpan.dataset.folder = "root";
-    if (currentFolderId === "root") {
-        rootSpan.className = "current";
-    }
-    breadcrumbsEl.appendChild(rootSpan);
-
-    const chain = buildPath(currentFolderId);
-    chain.forEach((f, idx) => {
-        const sep = document.createTextNode(" / ");
-        breadcrumbsEl.appendChild(sep);
-
-        const s = document.createElement("span");
-        s.textContent = f.name;
-        s.dataset.folder = f.id;
-        if (idx === chain.length - 1) {
-            s.className = "current";
-        }
-        breadcrumbsEl.appendChild(s);
-    });
-}
-
-function renderDrive(filterQuery = "") {
-    const q = filterQuery.toLowerCase().trim();
-    renderBreadcrumbs();
-
-    foldersList.innerHTML = "";
-    const visibleFolders = folders.filter(f => {
-        if (q) return f.name.toLowerCase().includes(q);
-        return f.parentId === currentFolderId;
-    });
-
-    visibleFolders.forEach(f => {
-        const div = document.createElement("div");
-        div.className = "folder-item";
-        div.dataset.id = f.id;
-
-        const span = document.createElement("span");
-        span.className = "folder-label";
-        span.textContent = f.name;
-
-        const btn = document.createElement("button");
-        btn.className = "btn btn-outline btn-sm rename-folder-btn";
-        btn.textContent = "Preimenuj";
-
-        div.appendChild(span);
-        div.appendChild(btn);
-        foldersList.appendChild(div);
-    });
-
-    filesBody.innerHTML = "";
-    const visibleFiles = files.filter(f => {
-        if (q) return f.name.toLowerCase().includes(q);
-        return f.folderId === currentFolderId;
-    });
-
-    visibleFiles.forEach(f => {
-        const tr = document.createElement("tr");
-        tr.dataset.id = f.id;
-
-        const tdName = document.createElement("td");
-        tdName.className = "file-title";
-        tdName.textContent = f.name + (f.version > 1 ? " (v" + f.version + ")" : "");
-
-        const tdOwner = document.createElement("td");
-        tdOwner.textContent = f.owner;
-
-        const tdDate = document.createElement("td");
-        tdDate.textContent = f.updatedAt;
-
-        const tdSize = document.createElement("td");
-        tdSize.textContent = formatSize(f.sizeBytes);
-
-        const tdActions = document.createElement("td");
-        tdActions.innerHTML = `
-            <div class="row-actions">
-                <button class="btn btn-outline btn-sm preview-btn">Pregled</button>
-                <button class="btn btn-outline btn-sm version-file-btn">Nova verzija</button>
-                <button class="btn btn-outline btn-sm rename-file-btn">Preimenuj</button>
-                <button class="btn btn-danger btn-sm delete-file-btn">Obrisi</button>
-            </div>
-        `;
-
-        tr.appendChild(tdName);
-        tr.appendChild(tdOwner);
-        tr.appendChild(tdDate);
-        tr.appendChild(tdSize);
-        tr.appendChild(tdActions);
-        filesBody.appendChild(tr);
-    });
-
-    updateQuotaUI();
-}
-
 function renderActivities() {
-    if (!activityBody) return;
     activityBody.innerHTML = "";
+    if (activities.length === 0) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 3;
+        td.className = "empty-cell";
+        td.textContent = "Nema zabelezenih aktivnosti u ovoj sesiji.";
+        tr.appendChild(td);
+        activityBody.appendChild(tr);
+        return;
+    }
     activities.forEach(a => {
         const tr = document.createElement("tr");
         const tdAct = document.createElement("td");
@@ -220,12 +114,253 @@ function renderActivities() {
     });
 }
 
+function updateQuotaUI() {
+    const pct = quotaBytes > 0 ? Math.min(100, Math.round((usedBytes / quotaBytes) * 100)) : 0;
+    document.getElementById("quotaLabel").textContent = formatBytes(usedBytes) + " / " + formatBytes(quotaBytes);
+    document.getElementById("quotaFill").style.width = Math.max(2, pct) + "%";
+    const modalQuota = document.getElementById("currentQuotaModal");
+    if (modalQuota) modalQuota.textContent = formatBytes(quotaBytes);
+}
+
+function renderQuotaRequests() {
+    const ul = document.getElementById("myQuotaRequestsList");
+    if (!ul) return;
+    ul.innerHTML = "";
+    if (!myQuotaRequests.length) {
+        const li = document.createElement("li");
+        li.style.color = "#64748b";
+        li.textContent = "Nemate poslatih zahteva.";
+        ul.appendChild(li);
+        return;
+    }
+    const labels = { pending: "Na cekanju", approved: "Odobreno", rejected: "Odbijeno" };
+    myQuotaRequests.forEach(qr => {
+        const li = document.createElement("li");
+        const title = document.createElement("div");
+        title.textContent = "Trazeno: " + formatBytes(qr.requestedBytes) + " — " + (labels[qr.status] || qr.status);
+        const span = document.createElement("span");
+        span.className = "notif-time";
+        span.textContent = formatDateTime(qr.createdAt);
+        li.appendChild(title);
+        li.appendChild(span);
+        ul.appendChild(li);
+    });
+}
+
+async function loadQuota() {
+    try {
+        const res = await sendRequest("/quota/requests/mine", "GET");
+        if (typeof res.quotaBytes === "number") {
+            quotaBytes = res.quotaBytes;
+        }
+        myQuotaRequests = Array.isArray(res.requests) ? res.requests : [];
+        updateQuotaUI();
+        renderQuotaRequests();
+    } catch (err) {
+        if (!handleAuthError(err)) {
+            updateQuotaUI();
+        }
+    }
+}
+
+function renderBreadcrumbs() {
+    breadcrumbsEl.innerHTML = "";
+    pathStack.forEach((entry, idx) => {
+        if (idx > 0) {
+            breadcrumbsEl.appendChild(document.createTextNode(" / "));
+        }
+        const span = document.createElement("span");
+        span.textContent = entry.name;
+        span.dataset.index = String(idx);
+        if (idx === pathStack.length - 1) {
+            span.className = "current";
+        }
+        breadcrumbsEl.appendChild(span);
+    });
+}
+
+function renderDrive(filterQuery = "") {
+    const q = filterQuery.toLowerCase().trim();
+    renderBreadcrumbs();
+
+    foldersList.innerHTML = "";
+    const visibleFolders = currentFolders.filter(f => !q || (f.name || "").toLowerCase().includes(q));
+
+    if (visibleFolders.length === 0) {
+        const empty = document.createElement("div");
+        empty.className = "empty-muted";
+        empty.textContent = q ? "Nema foldera koji odgovaraju pretrazi." : "Nema podfoldera u ovom folderu.";
+        foldersList.appendChild(empty);
+    } else {
+        visibleFolders.forEach(f => {
+            const div = document.createElement("div");
+            div.className = "folder-item";
+            div.dataset.id = f.id;
+
+            const span = document.createElement("span");
+            span.className = "folder-label";
+            span.textContent = f.name;
+
+            const btn = document.createElement("button");
+            btn.className = "btn btn-outline btn-sm rename-folder-btn";
+            btn.textContent = "Preimenuj";
+
+            div.appendChild(span);
+            div.appendChild(btn);
+            foldersList.appendChild(div);
+        });
+    }
+
+    filesBody.innerHTML = "";
+    const mergedFiles = currentFiles.length > 0
+        ? currentFiles
+        : sessionUploadedFiles.filter(f => (f.parentId || null) === currentFolderId());
+    const visibleFiles = mergedFiles.filter(f => !q || (f.name || "").toLowerCase().includes(q));
+
+    if (visibleFiles.length === 0) {
+        const tr = document.createElement("tr");
+        const td = document.createElement("td");
+        td.colSpan = 5;
+        td.className = "empty-cell";
+        td.textContent = q ? "Nema datoteka koje odgovaraju pretrazi." : "Nema datoteka u ovom folderu.";
+        tr.appendChild(td);
+        filesBody.appendChild(tr);
+    } else {
+        visibleFiles.forEach(f => {
+            const tr = document.createElement("tr");
+            tr.dataset.id = f.id;
+
+            const tdName = document.createElement("td");
+            tdName.className = "file-title";
+            tdName.textContent = f.name;
+
+            const tdVer = document.createElement("td");
+            tdVer.textContent = "v" + (f.currentVersion || f.version || 1);
+
+            const tdDate = document.createElement("td");
+            tdDate.textContent = formatDateTime(f.updatedAt || f.createdAt);
+
+            const tdSize = document.createElement("td");
+            tdSize.textContent = f.sizeBytes != null ? formatBytes(f.sizeBytes) : "-";
+
+            const tdActions = document.createElement("td");
+            const actionsWrap = document.createElement("div");
+            actionsWrap.className = "row-actions";
+
+            const versionBtn = document.createElement("button");
+            versionBtn.className = "btn btn-outline btn-sm version-file-btn";
+            versionBtn.textContent = "Nova verzija";
+
+            const renameBtn = document.createElement("button");
+            renameBtn.className = "btn btn-outline btn-sm rename-file-btn";
+            renameBtn.textContent = "Preimenuj";
+
+            actionsWrap.appendChild(versionBtn);
+            actionsWrap.appendChild(renameBtn);
+            tdActions.appendChild(actionsWrap);
+
+            tr.appendChild(tdName);
+            tr.appendChild(tdVer);
+            tr.appendChild(tdDate);
+            tr.appendChild(tdSize);
+            tr.appendChild(tdActions);
+            filesBody.appendChild(tr);
+        });
+    }
+
+    usedBytes = mergedFiles.reduce((sum, f) => sum + (Number(f.sizeBytes) || 0), 0);
+    updateQuotaUI();
+}
+
+async function loadFolderContents() {
+    clearDriveMsg();
+    const pid = currentFolderId();
+    const query = pid ? "?parentId=" + encodeURIComponent(pid) : "";
+
+    try {
+        const foldersRes = await sendRequest("/folders" + query, "GET");
+        currentFolders = Array.isArray(foldersRes) ? foldersRes : (foldersRes.folders || []);
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        currentFolders = [];
+        if (err.status === 502) {
+            showDriveMsg("Files servis trenutno nije dostupan.");
+        } else {
+            showDriveMsg(err.message || "Ucitavanje foldera nije uspelo.");
+        }
+    }
+
+    try {
+        const filesRes = await sendRequest("/files" + query, "GET");
+        currentFiles = Array.isArray(filesRes) ? filesRes : (filesRes.files || []);
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        currentFiles = [];
+    }
+
+    renderDrive(searchInput.value);
+}
+
+async function loadNotifications(silent = false) {
+    const ul = document.getElementById("notifList");
+    const badge = document.getElementById("notifBadge");
+    if (!silent) {
+        clearModalMsg("notifMsg");
+        ul.innerHTML = "";
+    }
+
+    try {
+        const res = await sendRequest("/notifications", "GET");
+        const list = Array.isArray(res) ? res : (res.notifications || []);
+
+        if (badge) {
+            if (list.length > 0 && silent) {
+                badge.textContent = String(list.length);
+                badge.style.display = "inline-block";
+            } else if (!silent) {
+                badge.style.display = "none";
+            }
+        }
+
+        if (silent) return;
+
+        if (list.length === 0) {
+            const li = document.createElement("li");
+            li.style.color = "#64748b";
+            li.textContent = "Nemate novih notifikacija.";
+            ul.appendChild(li);
+            return;
+        }
+
+        list.forEach(n => {
+            const li = document.createElement("li");
+            const msgDiv = document.createElement("div");
+            msgDiv.textContent = n.message || n.text || n.title || "Obavestenje";
+            const span = document.createElement("span");
+            span.className = "notif-time";
+            span.textContent = formatDateTime(n.createdAt || n.timestamp);
+            li.appendChild(msgDiv);
+            li.appendChild(span);
+            ul.appendChild(li);
+        });
+    } catch (err) {
+        if (silent) return;
+        if (handleAuthError(err)) return;
+        showModalMsg("notifMsg", err.status === 502
+            ? "Servis za notifikacije trenutno nije dostupan."
+            : (err.message || "Ucitavanje notifikacija nije uspelo."));
+    }
+}
+
 breadcrumbsEl.addEventListener("click", (e) => {
-    const folderId = e.target.dataset.folder;
-    if (folderId) {
-        currentFolderId = folderId;
-        searchInput.value = "";
-        renderDrive();
+    const idx = e.target.dataset.index;
+    if (idx !== undefined) {
+        const num = Number(idx);
+        if (!Number.isNaN(num) && num < pathStack.length - 1) {
+            pathStack = pathStack.slice(0, num + 1);
+            searchInput.value = "";
+            loadFolderContents();
+        }
     }
 });
 
@@ -233,94 +368,41 @@ foldersList.addEventListener("click", (e) => {
     const item = e.target.closest(".folder-item");
     if (!item) return;
     const fId = item.dataset.id;
-    const folderObj = folders.find(f => f.id === fId);
+    const folderObj = currentFolders.find(f => f.id === fId);
     if (!folderObj) return;
 
     if (e.target.classList.contains("rename-folder-btn")) {
         e.stopPropagation();
         renameTarget = { type: "folder", item: folderObj };
         renameInput.value = folderObj.name;
+        clearModalMsg("renameMsg");
         renameModal.classList.add("open");
         return;
     }
 
-    currentFolderId = folderObj.id;
+    pathStack.push({ id: folderObj.id, name: folderObj.name });
     searchInput.value = "";
-    renderDrive();
+    loadFolderContents();
 });
 
 filesBody.addEventListener("click", (e) => {
     const row = e.target.closest("tr");
-    if (!row) return;
-    const fileObj = files.find(f => f.id === row.dataset.id);
+    if (!row || !row.dataset.id) return;
+    const pool = currentFiles.length > 0 ? currentFiles : sessionUploadedFiles;
+    const fileObj = pool.find(f => f.id === row.dataset.id);
     if (!fileObj) return;
 
     if (e.target.classList.contains("rename-file-btn")) {
         renameTarget = { type: "file", item: fileObj };
         renameInput.value = fileObj.name;
+        clearModalMsg("renameMsg");
         renameModal.classList.add("open");
     } else if (e.target.classList.contains("version-file-btn")) {
-        versionTargetFileId = fileObj.id;
+        versionTargetFile = fileObj;
+        document.getElementById("uploadModalTitle").textContent = "Nova verzija: " + fileObj.name;
         document.getElementById("fileInput").value = "";
+        clearModalMsg("uploadMsg");
         uploadModal.classList.add("open");
-    } else if (e.target.classList.contains("preview-btn")) {
-        openPreview(fileObj);
-    } else if (e.target.classList.contains("delete-file-btn")) {
-        const idx = files.findIndex(f => f.id === fileObj.id);
-        if (idx !== -1) {
-            files.splice(idx, 1);
-            logActivity("Brisanje datoteke", fileObj.name);
-            renderDrive(searchInput.value);
-        }
-    }
-});
-
-function openPreview(fileObj) {
-    currentPreviewFile = fileObj;
-    document.getElementById("previewTitle").textContent = fileObj.name + " (v" + fileObj.version + ")";
-    const box = document.getElementById("previewContent");
-    box.innerHTML = "";
-
-    if (fileObj.dataUrl && fileObj.name.match(/\.(png|jpg|jpeg|gif|webp)$/i)) {
-        const img = document.createElement("img");
-        img.src = fileObj.dataUrl;
-        img.style.maxWidth = "100%";
-        box.appendChild(img);
-    } else {
-        box.textContent = fileObj.content || "Sadrzaj datoteke: " + fileObj.name;
-    }
-    previewModal.classList.add("open");
-}
-
-function triggerDownload(name, content, dataUrl) {
-    const a = document.createElement("a");
-    if (dataUrl) {
-        a.href = dataUrl;
-    } else {
-        const blob = new Blob([content || ""], { type: "text/plain;charset=utf-8" });
-        a.href = URL.createObjectURL(blob);
-    }
-    a.download = name;
-    document.body.appendChild(a);
-    a.click();
-    a.remove();
-    logActivity("Preuzimanje datoteke", name);
-}
-
-document.getElementById("downloadFromPreviewBtn").addEventListener("click", () => {
-    if (!currentPreviewFile) return;
-    triggerDownload(currentPreviewFile.name, currentPreviewFile.content, currentPreviewFile.dataUrl);
-});
-
-document.getElementById("sharedBody").addEventListener("click", (e) => {
-    const name = e.target.dataset.name;
-    const content = e.target.dataset.content;
-    if (!name) return;
-
-    if (e.target.classList.contains("shared-preview-btn")) {
-        openPreview({ name, version: 1, content });
-    } else if (e.target.classList.contains("shared-download-btn")) {
-        triggerDownload(name, content, null);
     }
 });
 
@@ -344,16 +426,21 @@ document.getElementById("logoutBtn").addEventListener("click", () => {
 
 document.getElementById("openNewFolderBtn").addEventListener("click", () => {
     document.getElementById("folderNameInput").value = "";
+    clearModalMsg("folderMsg");
     folderModal.classList.add("open");
 });
 
 document.getElementById("openUploadBtn").addEventListener("click", () => {
-    versionTargetFileId = null;
+    versionTargetFile = null;
+    document.getElementById("uploadModalTitle").textContent = "Otpremi datoteku";
     document.getElementById("fileInput").value = "";
+    clearModalMsg("uploadMsg");
     uploadModal.classList.add("open");
 });
 
 document.getElementById("openQuotaBtn").addEventListener("click", () => {
+    clearModalMsg("quotaMsg");
+    loadQuota();
     quotaModal.classList.add("open");
 });
 
@@ -361,32 +448,18 @@ document.getElementById("openChangePwBtn").addEventListener("click", () => {
     document.getElementById("oldPwInput").value = "";
     document.getElementById("newPwInput").value = "";
     document.getElementById("repeatNewPwInput").value = "";
-    document.getElementById("changePwMsg").className = "msg-box";
+    clearModalMsg("changePwMsg");
     changePwModal.classList.add("open");
 });
 
-document.getElementById("openNotifBtn").addEventListener("click", async () => {
+document.getElementById("openNotifBtn").addEventListener("click", () => {
     notifModal.classList.add("open");
-    const badge = document.getElementById("notifBadge");
-    if (badge) badge.style.display = "none";
-
-    try {
-        const list = await sendRequest("/notifications", "GET");
-        if (Array.isArray(list) && list.length > 0) {
-            const ul = document.getElementById("notifList");
-            ul.innerHTML = "";
-            list.forEach(n => {
-                const li = document.createElement("li");
-                li.textContent = n.message || n.text;
-                const span = document.createElement("span");
-                span.className = "notif-time";
-                span.textContent = n.createdAt || "";
-                li.appendChild(span);
-                ul.appendChild(li);
-            });
-        }
-    } catch (_) {}
+    loadNotifications(false);
 });
+
+function closeAllModals() {
+    document.querySelectorAll(".modal-bg").forEach(m => m.classList.remove("open"));
+}
 
 document.querySelectorAll(".close-modal").forEach(btn => {
     btn.addEventListener("click", closeAllModals);
@@ -398,126 +471,185 @@ document.querySelectorAll(".modal-bg").forEach(bg => {
     });
 });
 
-function closeAllModals() {
-    document.querySelectorAll(".modal-bg").forEach(m => m.classList.remove("open"));
-}
-
-document.getElementById("saveFolderBtn").addEventListener("click", () => {
+document.getElementById("saveFolderBtn").addEventListener("click", async () => {
+    clearModalMsg("folderMsg");
     const name = document.getElementById("folderNameInput").value.trim();
-    if (!name) return;
-
-    folders.push({
-        id: "f_" + Date.now(),
-        name,
-        parentId: currentFolderId
-    });
-    logActivity("Kreiranje foldera", name);
-    renderDrive(searchInput.value);
-    closeAllModals();
-});
-
-document.getElementById("saveUploadBtn").addEventListener("click", () => {
-    const input = document.getElementById("fileInput");
-    if (!input.files || !input.files.length) return;
-
-    const file = input.files[0];
-    if (usedQuotaBytes + file.size > maxQuotaBytes) {
-        alert("Premasena je dodeljena kvota skladista.");
+    if (!name) {
+        showModalMsg("folderMsg", "Unesite naziv foldera.");
         return;
     }
 
-    const reader = new FileReader();
-    reader.onload = () => {
-        const isImg = /\.(png|jpg|jpeg|gif|webp)$/i.test(file.name);
-        let existing = null;
-        if (versionTargetFileId) {
-            existing = files.find(f => f.id === versionTargetFileId);
-        } else {
-            existing = files.find(f => f.folderId === currentFolderId && f.name === file.name);
-        }
+    const btn = document.getElementById("saveFolderBtn");
+    btn.disabled = true;
 
-        if (existing) {
-            existing.sizeBytes = file.size;
-            existing.updatedAt = nowFormatted();
-            existing.version += 1;
-            if (isImg) {
-                existing.dataUrl = reader.result;
-            } else {
-                existing.content = reader.result;
-            }
-            logActivity("Otpremanje nove verzije (v" + existing.version + ")", existing.name);
-        } else {
-            files.unshift({
-                id: "file_" + Date.now(),
-                name: file.name,
-                folderId: currentFolderId,
-                owner: "Ja",
-                updatedAt: nowFormatted(),
-                sizeBytes: file.size,
-                version: 1,
-                content: isImg ? "" : reader.result,
-                dataUrl: isImg ? reader.result : null
-            });
-            logActivity("Otpremanje datoteke", file.name);
-        }
-
-        versionTargetFileId = null;
-        renderDrive(searchInput.value);
+    try {
+        const body = { name, parentId: currentFolderId() };
+        await sendRequest("/folders", "POST", body);
+        logActivity("Kreiranje foldera", name);
         closeAllModals();
-    };
-
-    if (/\.(png|jpg|jpeg|gif|webp)$/i.test(file.name)) {
-        reader.readAsDataURL(file);
-    } else {
-        reader.readAsText(file);
+        await loadFolderContents();
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        showModalMsg("folderMsg", err.message || "Kreiranje foldera nije uspelo.");
+    } finally {
+        btn.disabled = false;
     }
 });
 
-document.getElementById("saveRenameBtn").addEventListener("click", () => {
+document.getElementById("saveUploadBtn").addEventListener("click", async () => {
+    clearModalMsg("uploadMsg");
+    const input = document.getElementById("fileInput");
+    if (!input.files || !input.files.length) {
+        showModalMsg("uploadMsg", "Izaberite datoteku.");
+        return;
+    }
+
+    const file = input.files[0];
+    if (file.size > MAX_UPLOAD_BYTES) {
+        showModalMsg("uploadMsg", "Datoteka prelazi maksimalnu velicinu od 50 MB.");
+        return;
+    }
+
+    const btn = document.getElementById("saveUploadBtn");
+    btn.disabled = true;
+
+    try {
+        const fd = new FormData();
+        fd.append("file", file);
+
+        let created;
+        if (versionTargetFile) {
+            created = await sendMultipart("/files/" + encodeURIComponent(versionTargetFile.id) + "/versions", fd, "POST");
+            logActivity("Otpremanje nove verzije", versionTargetFile.name);
+        } else {
+            const pid = currentFolderId();
+            if (pid) {
+                fd.append("parentId", pid);
+            }
+            created = await sendMultipart("/files", fd, "POST");
+            logActivity("Otpremanje datoteke", file.name);
+            if (created && created.id) {
+                sessionUploadedFiles.unshift({
+                    ...created,
+                    sizeBytes: file.size
+                });
+            }
+        }
+
+        versionTargetFile = null;
+        closeAllModals();
+        await loadFolderContents();
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        showModalMsg("uploadMsg", err.message || "Otpremanje datoteke nije uspelo.");
+    } finally {
+        btn.disabled = false;
+    }
+});
+
+document.getElementById("saveRenameBtn").addEventListener("click", async () => {
+    clearModalMsg("renameMsg");
     const newName = renameInput.value.trim();
-    if (!newName || !renameTarget) return;
-
-    const oldName = renameTarget.item.name;
-    renameTarget.item.name = newName;
-    if (renameTarget.type === "file") {
-        renameTarget.item.updatedAt = nowFormatted();
+    if (!newName || !renameTarget) {
+        showModalMsg("renameMsg", "Unesite novi naziv.");
+        return;
     }
-    logActivity("Preimenovanje (" + oldName + " -> " + newName + ")", newName);
-    renameTarget = null;
-    renderDrive(searchInput.value);
-    closeAllModals();
+
+    const btn = document.getElementById("saveRenameBtn");
+    btn.disabled = true;
+
+    try {
+        const base = renameTarget.type === "folder" ? "/folders/" : "/files/";
+        await sendRequest(base + encodeURIComponent(renameTarget.item.id), "PATCH", { name: newName });
+        logActivity("Preimenovanje", renameTarget.item.name + " -> " + newName);
+        renameTarget = null;
+        closeAllModals();
+        await loadFolderContents();
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        showModalMsg("renameMsg", err.status === 404 || err.status === 405
+            ? "Endpoint za preimenovanje jos nije dostupan na Files servisu."
+            : (err.message || "Preimenovanje nije uspelo."));
+    } finally {
+        btn.disabled = false;
+    }
 });
 
-document.getElementById("sendQuotaBtn").addEventListener("click", () => {
-    const reqGb = document.getElementById("quotaInput").value;
-    logActivity("Zahtev za povecanje kvote", reqGb + " GB");
-    closeAllModals();
+document.getElementById("sendQuotaBtn").addEventListener("click", async () => {
+    clearModalMsg("quotaMsg");
+    const gb = Number(document.getElementById("quotaInput").value);
+    if (!Number.isFinite(gb) || gb <= 0 || gb > 100) {
+        showModalMsg("quotaMsg", "Unesite ispravnu vrednost kvote u GB (1 - 100).");
+        return;
+    }
+
+    const requestedBytes = Math.round(gb * 1073741824);
+    const btn = document.getElementById("sendQuotaBtn");
+    btn.disabled = true;
+
+    try {
+        await sendRequest("/quota/requests", "POST", { requestedBytes });
+        showModalMsg("quotaMsg", "Zahtev za povecanje kvote je uspesno poslat administratoru.", "success");
+        logActivity("Zahtev za povecanje kvote", gb + " GB");
+        await loadQuota();
+    } catch (err) {
+        if (handleAuthError(err)) return;
+        if (err.code === "request_pending") {
+            showModalMsg("quotaMsg", "Vec imate aktivan zahtev na cekanju.");
+        } else if (err.fields && err.fields.requestedBytes) {
+            showModalMsg("quotaMsg", err.fields.requestedBytes);
+        } else {
+            showModalMsg("quotaMsg", err.message || "Slanje zahteva nije uspelo.");
+        }
+    } finally {
+        btn.disabled = false;
+    }
 });
 
 document.getElementById("saveChangePwBtn").addEventListener("click", async () => {
-    const oldPassword = document.getElementById("oldPwInput").value;
+    clearModalMsg("changePwMsg");
+    const currentPassword = document.getElementById("oldPwInput").value;
     const newPassword = document.getElementById("newPwInput").value;
-    const repeatPassword = document.getElementById("repeatNewPwInput").value;
-    const msg = document.getElementById("changePwMsg");
+    const newPasswordRepeat = document.getElementById("repeatNewPwInput").value;
 
-    if (newPassword.length < 10) {
-        msg.className = "msg-box error show";
-        msg.textContent = "Nova lozinka mora imati najmanje 10 karaktera.";
+    if (!currentPassword) {
+        showModalMsg("changePwMsg", "Unesite trenutnu lozinku.");
         return;
     }
-    if (newPassword !== repeatPassword) {
-        msg.className = "msg-box error show";
-        msg.textContent = "Lozinke se ne poklapaju.";
+    const pwErr = validateStrongPassword(newPassword);
+    if (pwErr) {
+        showModalMsg("changePwMsg", pwErr);
         return;
     }
+    if (newPassword !== newPasswordRepeat) {
+        showModalMsg("changePwMsg", "Lozinke se ne poklapaju.");
+        return;
+    }
+
+    const btn = document.getElementById("saveChangePwBtn");
+    btn.disabled = true;
 
     try {
-        await sendRequest("/password-change", "POST", { oldPassword, newPassword, passwordRepeat: repeatPassword });
-        msg.className = "msg-box success show";
-        msg.textContent = "Lozinka je uspesno promenjena.";
+        await sendRequest("/password/change", "POST", {
+            currentPassword,
+            newPassword,
+            newPasswordRepeat
+        });
+        showModalMsg("changePwMsg", "Lozinka je uspesno promenjena.", "success");
+        logActivity("Promena lozinke", "Korisnicki nalog");
     } catch (err) {
-        msg.className = "msg-box error show";
-        msg.textContent = err.message || "Promena lozinke nije uspela (lozinka mora biti bar 1 dan stara).";
+        if (handleAuthError(err)) return;
+        if (err.code === "password_too_new") {
+            showModalMsg("changePwMsg", "Lozinka mora biti stara bar 1 dan pre nove promene.");
+        } else if (err.code === "wrong_password") {
+            showModalMsg("changePwMsg", "Trenutna lozinka nije ispravna.");
+        } else if (err.fields && err.fields.newPassword) {
+            showModalMsg("changePwMsg", err.fields.newPassword);
+        } else {
+            showModalMsg("changePwMsg", err.message || "Promena lozinke nije uspela.");
+        }
+    } finally {
+        btn.disabled = false;
     }
 });
 
@@ -525,5 +657,7 @@ searchInput.addEventListener("input", () => {
     renderDrive(searchInput.value);
 });
 
-renderDrive();
 renderActivities();
+loadQuota();
+loadFolderContents();
+loadNotifications(true);
