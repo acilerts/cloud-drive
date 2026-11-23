@@ -1,12 +1,16 @@
 ﻿# API ugovor – Files servis
 
-Files servis upravlja metapodacima o fajlovima i folderima. Metapodaci se čuvaju u MongoDB bazi, dok se sadržaj fajlova čuva u MinIO skladištu.
+Files servis upravlja metapodacima o fajlovima, njihovim verzijama i folderima. Metapodaci se čuvaju u MongoDB bazi, dok se sadržaj fajlova čuva u MinIO skladištu.
 
-Trenutno implementirani endpoint-i odnose se na kreiranje i izlistavanje foldera.
+Servis omogućava:
+- Kreiranje foldera i podfoldera.
+- Izlistavanje foldera.
+- Otpremanje fajlova.
+- Otpremanje novih verzija postojećih fajlova.
 
 ## Autentifikacija
 
-Endpoint-i zahtevaju validan JWT token registrovanog korisnika.
+Svi endpoint-i zahtevaju validan JWT token registrovanog korisnika sa ulogom `user`.
 
 Token se šalje kroz HTTP zaglavlje:
 

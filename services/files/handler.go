@@ -40,6 +40,7 @@ func (handler *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /folders", handler.createFolder)
 	mux.HandleFunc("GET /folders", handler.listFolders)
 	mux.HandleFunc("POST /files", handler.uploadFile)
+	mux.HandleFunc("POST /files/{fileId}/versions", handler.uploadFileVersion)
 }
 
 func (handler *Handler) createFolder(
@@ -293,6 +294,114 @@ func (handler *Handler) uploadFile(
 
 		default:
 			platform.WriteError(w, http.StatusInternalServerError, "could not upload file")
+		}
+
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusCreated, file)
+}
+
+func (handler *Handler) uploadFileVersion(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	fileID, err := bson.ObjectIDFromHex(r.PathValue("fileId"))
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid fileId")
+		return
+	}
+
+	r.Body = http.MaxBytesReader(w, r.Body, maxUploadSize+(1<<20))
+
+	if err := r.ParseMultipartForm(maxFormMemory); err != nil {
+		var maxBytesError *http.MaxBytesError
+
+		if errors.As(err, &maxBytesError) {
+			platform.WriteError(w, http.StatusRequestEntityTooLarge, "request too large")
+			return
+		}
+
+		platform.WriteError(w, http.StatusBadRequest, "invalid multipart request")
+		return
+	}
+
+	if r.MultipartForm != nil {
+		defer r.MultipartForm.RemoveAll()
+	}
+
+	fileHeaders := r.MultipartForm.File["file"]
+
+	if len(fileHeaders) != 1 {
+		platform.WriteError(w, http.StatusBadRequest, "exactly one file is required")
+		return
+	}
+
+	fileHeader := fileHeaders[0]
+
+	if fileHeader.Size > maxUploadSize {
+		platform.WriteError(w, http.StatusRequestEntityTooLarge, "file too large")
+		return
+	}
+
+	name := strings.TrimSpace(fileHeader.Filename)
+	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
+
+	if name == "" || name == "." {
+		platform.WriteError(w, http.StatusBadRequest, "invalid file name")
+		return
+	}
+
+	uploadedFile, err := fileHeader.Open()
+	if err != nil {
+		platform.WriteError(w, http.StatusInternalServerError, "could not read uploaded file")
+		return
+	}
+	defer uploadedFile.Close()
+
+	sample := make([]byte, 512)
+	n, readErr := io.ReadFull(uploadedFile, sample)
+
+	if readErr != nil && !errors.Is(readErr, io.EOF) &&
+		!errors.Is(readErr, io.ErrUnexpectedEOF) {
+		platform.WriteError(w, http.StatusBadRequest, "could not read uploaded file")
+		return
+	}
+
+	contentType := http.DetectContentType(sample[:n])
+
+	if _, err := uploadedFile.Seek(0, io.SeekStart); err != nil {
+		platform.WriteError(w, http.StatusInternalServerError, "could not process uploaded file")
+		return
+	}
+
+	objectKey := ownerID.Hex() + "/" + fileID.Hex() + "/" + bson.NewObjectID().Hex()
+
+	file, err := handler.service.UploadFileVersion(
+		r.Context(),
+		ownerID,
+		fileID,
+		objectKey,
+		uploadedFile,
+		fileHeader.Size,
+		contentType,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrFileNotFound):
+			platform.WriteError(w, http.StatusNotFound, "file not found")
+
+		case errors.Is(err, ErrInvalidFileSize):
+			platform.WriteError(w, http.StatusBadRequest, "invalid file size")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not upload file version")
 		}
 
 		return
