@@ -216,6 +216,70 @@ func (repository *handlerTestRepository) FindFolders(
 	return folders, nil
 }
 
+func (repository *handlerTestRepository) FindFiles(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) ([]File, error) {
+	var files []File
+
+	for _, file := range repository.files {
+		if file.OwnerID != ownerID {
+			continue
+		}
+
+		if parentID == nil {
+			if file.ParentID != nil {
+				continue
+			}
+		} else {
+			if file.ParentID == nil || *file.ParentID != *parentID {
+				continue
+			}
+		}
+
+		files = append(files, *file)
+	}
+
+	return files, nil
+}
+
+func (repository *handlerTestRepository) RenameFolder(
+	ctx context.Context,
+	folderID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	folder, exists := repository.folders[folderID]
+	if !exists || folder.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	folder.Name = name
+	folder.UpdatedAt = updatedAt
+
+	return nil
+}
+
+func (repository *handlerTestRepository) RenameFile(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	file.Name = name
+	file.UpdatedAt = updatedAt
+
+	return nil
+}
+
 func (repository *handlerTestRepository) CreateFile(
 	ctx context.Context,
 	file *File,
@@ -1639,5 +1703,502 @@ func TestUploadFileVersionTooLarge(t *testing.T) {
 			response.Code,
 			response.Body.String(),
 		)
+	}
+}
+
+func TestListFolderContentsThroughHTTPSuccessfully(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	parentID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	now := time.Now().UTC()
+
+	repository.folders[parentID] = &Folder{
+		ID:        parentID,
+		OwnerID:   userID,
+		Name:      "Dokumenti",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	subfolderID := bson.NewObjectID()
+
+	repository.folders[subfolderID] = &Folder{
+		ID:        subfolderID,
+		OwnerID:   userID,
+		Name:      "Fakture",
+		ParentID:  &parentID,
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	fileID := bson.NewObjectID()
+
+	repository.files[fileID] = &File{
+		ID:             fileID,
+		OwnerID:        userID,
+		Name:           "racun.pdf",
+		ParentID:       &parentID,
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodGet,
+		"/folders/contents?parentId="+parentID.Hex(),
+		nil,
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusOK {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusOK,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var contents FolderContents
+
+	if err := json.NewDecoder(response.Body).Decode(&contents); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+
+	if len(contents.Folders) != 1 {
+		t.Fatalf("expected 1 subfolder, got %d", len(contents.Folders))
+	}
+
+	if contents.Folders[0].Name != "Fakture" {
+		t.Errorf("expected subfolder Fakture, got %s", contents.Folders[0].Name)
+	}
+
+	if len(contents.Files) != 1 {
+		t.Fatalf("expected 1 file, got %d", len(contents.Files))
+	}
+
+	if contents.Files[0].Name != "racun.pdf" {
+		t.Errorf("expected file racun.pdf, got %s", contents.Files[0].Name)
+	}
+}
+
+func TestRenameFolderThroughHTTPSuccessfully(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	folderID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.folders[folderID] = &Folder{
+		ID:        folderID,
+		OwnerID:   userID,
+		Name:      "Stari naziv",
+		CreatedAt: now,
+		UpdatedAt: now.Add(-time.Minute),
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/folders/"+folderID.Hex(),
+		strings.NewReader(`{"name":"Novi naziv"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNoContent,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	folder := repository.folders[folderID]
+
+	if folder.Name != "Novi naziv" {
+		t.Errorf("expected folder name Novi naziv, got %s", folder.Name)
+	}
+
+	if !folder.UpdatedAt.After(now.Add(-time.Minute)) {
+		t.Error("expected UpdatedAt to be updated")
+	}
+
+	if !folder.CreatedAt.Equal(now) {
+		t.Error("expected CreatedAt to remain unchanged")
+	}
+}
+
+func TestRenameFileThroughHTTPSuccessfully(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.files[fileID] = &File{
+		ID:             fileID,
+		OwnerID:        userID,
+		Name:           "stari-naziv.pdf",
+		CurrentVersion: 2,
+		CreatedAt:      now,
+		UpdatedAt:      now.Add(-time.Minute),
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/files/"+fileID.Hex(),
+		strings.NewReader(`{"name":"novi-naziv.pdf"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNoContent {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNoContent,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	file := repository.files[fileID]
+
+	if file.Name != "novi-naziv.pdf" {
+		t.Errorf("expected file name novi-naziv.pdf, got %s", file.Name)
+	}
+
+	if !file.UpdatedAt.After(now.Add(-time.Minute)) {
+		t.Error("expected UpdatedAt to be updated")
+	}
+
+	if !file.CreatedAt.Equal(now) {
+		t.Error("expected CreatedAt to remain unchanged")
+	}
+
+	if file.CurrentVersion != 2 {
+		t.Errorf("expected CurrentVersion to remain 2, got %d", file.CurrentVersion)
+	}
+}
+
+func TestRenameFolderThroughHTTPRejectsAnotherUsersFolder(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	anotherUserID := bson.NewObjectID()
+	folderID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.folders[folderID] = &Folder{
+		ID:        folderID,
+		OwnerID:   anotherUserID,
+		Name:      "Tudji folder",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/folders/"+folderID.Hex(),
+		strings.NewReader(`{"name":"Promenjen naziv"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNotFound,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if repository.folders[folderID].Name != "Tudji folder" {
+		t.Error("folder belonging to another user was renamed")
+	}
+}
+
+func TestRenameFileThroughHTTPRejectsAnotherUsersFile(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	anotherUserID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.files[fileID] = &File{
+		ID:             fileID,
+		OwnerID:        anotherUserID,
+		Name:           "tudji-fajl.pdf",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/files/"+fileID.Hex(),
+		strings.NewReader(`{"name":"promenjen-fajl.pdf"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNotFound,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if repository.files[fileID].Name != "tudji-fajl.pdf" {
+		t.Error("file belonging to another user was renamed")
+	}
+}
+
+func TestRenameFolderThroughHTTPRejectsInvalidName(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	folderID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.folders[folderID] = &Folder{
+		ID:        folderID,
+		OwnerID:   userID,
+		Name:      "Originalni naziv",
+		CreatedAt: now,
+		UpdatedAt: now,
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/folders/"+folderID.Hex(),
+		strings.NewReader(`{"name":"../"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if repository.folders[folderID].Name != "Originalni naziv" {
+		t.Error("folder name changed despite invalid input")
+	}
+}
+
+func TestRenameFileThroughHTTPRejectsInvalidName(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+
+	repository.files[fileID] = &File{
+		ID:             fileID,
+		OwnerID:        userID,
+		Name:           "originalni-fajl.pdf",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	service := NewService(repository)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPatch,
+		"/files/"+fileID.Hex(),
+		strings.NewReader(`{"name":"../"}`),
+	)
+	request.Header.Set("Authorization", "Bearer "+token)
+	request.Header.Set("Content-Type", "application/json")
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if repository.files[fileID].Name != "originalni-fajl.pdf" {
+		t.Error("file name changed despite invalid input")
 	}
 }

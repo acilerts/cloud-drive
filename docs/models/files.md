@@ -190,3 +190,131 @@ Prethodne verzije fajla ostaju sačuvane, a broj trenutno važeće verzije i vre
 - `404 Not Found` – fajl ne postoji ili nije dostupan autentifikovanom korisniku.
 - `413 Request Entity Too Large` – fajl ili HTTP zahtev je prevelik.
 - `500 Internal Server Error` – greška pri otpremanju nove verzije ili ažuriranju metapodataka.
+
+## GET /folders/contents – Prikaz sadržaja foldera
+
+Vraća sadržaj izabranog foldera, uključujući podfoldere i fajlove koji pripadaju autentifikovanom korisniku. Ako `parentId` nije naveden, vraća se sadržaj root direktorijuma.
+
+**Zaglavlja:**
+- `Authorization: Bearer <token>`
+
+**Opcioni query parametar:**
+
+| Parametar | Tip | Obavezno | Opis |
+|---|---|---|---|
+| `parentId` | ObjectID | Ne | Identifikator foldera čiji se sadržaj prikazuje |
+
+**Primeri zahteva:**
+
+```http
+GET /folders/contents
+GET /folders/contents?parentId=<folderId>
+```
+
+**Primer odgovora (200 OK):**
+
+```json
+{
+  "folders": [
+    {
+      "id": "folderObjectId",
+      "ownerId": "userObjectId",
+      "name": "Dokumenti",
+      "parentId": null
+    }
+  ],
+  "files": [
+    {
+      "id": "fileObjectId",
+      "ownerId": "userObjectId",
+      "name": "izvestaj.pdf",
+      "parentId": "folderObjectId",
+      "currentVersion": 1
+    }
+  ]
+}
+```
+
+**HTTP odgovori:**
+- `200 OK` – sadržaj foldera uspešno vraćen.
+- `400 Bad Request` – neispravan `parentId`.
+- `401 Unauthorized` – nedostaje ili nije validan token.
+- `404 Not Found` – folder ne postoji ili nije dostupan autentifikovanom korisniku.
+- `500 Internal Server Error` – greška pri prikazu sadržaja.
+
+## PATCH /folders/{folderId} – Preimenovanje foldera
+
+Menja naziv postojećeg foldera autentifikovanog korisnika.
+
+**Zaglavlja:**
+- `Authorization: Bearer <token>`
+- `Content-Type: application/json`
+
+**Parametri putanje:**
+
+| Parametar | Tip | Obavezno | Opis |
+|---|---|---|---|
+| `folderId` | ObjectID | Da | Identifikator foldera koji se preimenuje |
+
+**Telo zahteva:**
+
+```json
+{
+  "name": "Novi naziv"
+}
+```
+
+- `name` – novi naziv foldera.
+
+**Ograničenja:**
+- Folder mora pripadati autentifikovanom korisniku.
+- Naziv ne sme biti prazan niti sadržati samo razmake.
+- Naziv ne sme biti `.` ili `..`.
+- Naziv ne sme sadržati separatore putanja `/` i `\`.
+- Nakon uspešnog preimenovanja ažurira se `updatedAt`.
+
+**HTTP odgovori:**
+- `204 No Content` – folder uspešno preimenovan.
+- `400 Bad Request` – neispravan ID foldera, JSON telo ili naziv.
+- `401 Unauthorized` – nedostaje ili nije validan token.
+- `404 Not Found` – folder ne postoji ili nije dostupan autentifikovanom korisniku.
+- `500 Internal Server Error` – greška pri preimenovanju foldera.
+
+## PATCH /files/{fileId} – Preimenovanje fajla
+
+Menja naziv postojećeg fajla autentifikovanog korisnika. Sadržaj fajla i njegove verzije ostaju nepromenjeni.
+
+**Zaglavlja:**
+- `Authorization: Bearer <token>`
+- `Content-Type: application/json`
+
+**Parametri putanje:**
+
+| Parametar | Tip | Obavezno | Opis |
+|---|---|---|---|
+| `fileId` | ObjectID | Da | Identifikator fajla koji se preimenuje |
+
+**Telo zahteva:**
+
+```json
+{
+  "name": "novi-naziv.pdf"
+}
+```
+
+- `name` – novi naziv fajla.
+
+**Ograničenja:**
+- Fajl mora pripadati autentifikovanom korisniku.
+- Naziv ne sme biti prazan niti sadržati samo razmake.
+- Naziv ne sme biti `.` ili `..`.
+- Naziv ne sme sadržati separatore putanja `/` i `\`.
+- Nakon uspešnog preimenovanja ažurira se `updatedAt`.
+- Sadržaj fajla, njegove verzije i `objectKey` vrednosti ostaju nepromenjeni.
+
+**HTTP odgovori:**
+- `204 No Content` – fajl uspešno preimenovan.
+- `400 Bad Request` – neispravan ID fajla, JSON telo ili naziv.
+- `401 Unauthorized` – nedostaje ili nije validan token.
+- `404 Not Found` – fajl ne postoji ili nije dostupan autentifikovanom korisniku.
+- `500 Internal Server Error` – greška pri preimenovanju fajla.
