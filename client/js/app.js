@@ -35,7 +35,6 @@ const MAX_UPLOAD_BYTES = 50 * 1024 * 1024;
 let pathStack = [{ id: null, name: "Moji fajlovi" }];
 let currentFolders = [];
 let currentFiles = [];
-let sessionUploadedFiles = [];
 let renameTarget = null;
 let versionTargetFile = null;
 
@@ -212,10 +211,7 @@ function renderDrive(filterQuery = "") {
     }
 
     filesBody.innerHTML = "";
-    const mergedFiles = currentFiles.length > 0
-        ? currentFiles
-        : sessionUploadedFiles.filter(f => (f.parentId || null) === currentFolderId());
-    const visibleFiles = mergedFiles.filter(f => !q || (f.name || "").toLowerCase().includes(q));
+    const visibleFiles = currentFiles.filter(f => !q || (f.name || "").toLowerCase().includes(q));
 
     if (visibleFiles.length === 0) {
         const tr = document.createElement("tr");
@@ -268,7 +264,7 @@ function renderDrive(filterQuery = "") {
         });
     }
 
-    usedBytes = mergedFiles.reduce((sum, f) => sum + (Number(f.sizeBytes) || 0), 0);
+    usedBytes = currentFiles.reduce((sum, f) => sum + (Number(f.sizeBytes) || 0), 0);
     updateQuotaUI();
 }
 
@@ -278,24 +274,18 @@ async function loadFolderContents() {
     const query = pid ? "?parentId=" + encodeURIComponent(pid) : "";
 
     try {
-        const foldersRes = await sendRequest("/folders" + query, "GET");
-        currentFolders = Array.isArray(foldersRes) ? foldersRes : (foldersRes.folders || []);
+        const res = await sendRequest("/folders/contents" + query, "GET");
+        currentFolders = Array.isArray(res.folders) ? res.folders : [];
+        currentFiles = Array.isArray(res.files) ? res.files : [];
     } catch (err) {
         if (handleAuthError(err)) return;
         currentFolders = [];
+        currentFiles = [];
         if (err.status === 502) {
             showDriveMsg("Files servis trenutno nije dostupan.");
         } else {
-            showDriveMsg(err.message || "Ucitavanje foldera nije uspelo.");
+            showDriveMsg(err.message || "Ucitavanje sadrzaja foldera nije uspelo.");
         }
-    }
-
-    try {
-        const filesRes = await sendRequest("/files" + query, "GET");
-        currentFiles = Array.isArray(filesRes) ? filesRes : (filesRes.files || []);
-    } catch (err) {
-        if (handleAuthError(err)) return;
-        currentFiles = [];
     }
 
     renderDrive(searchInput.value);
@@ -388,8 +378,7 @@ foldersList.addEventListener("click", (e) => {
 filesBody.addEventListener("click", (e) => {
     const row = e.target.closest("tr");
     if (!row || !row.dataset.id) return;
-    const pool = currentFiles.length > 0 ? currentFiles : sessionUploadedFiles;
-    const fileObj = pool.find(f => f.id === row.dataset.id);
+    const fileObj = currentFiles.find(f => f.id === row.dataset.id);
     if (!fileObj) return;
 
     if (e.target.classList.contains("rename-file-btn")) {
@@ -517,23 +506,16 @@ document.getElementById("saveUploadBtn").addEventListener("click", async () => {
         const fd = new FormData();
         fd.append("file", file);
 
-        let created;
         if (versionTargetFile) {
-            created = await sendMultipart("/files/" + encodeURIComponent(versionTargetFile.id) + "/versions", fd, "POST");
+            await sendMultipart("/files/" + encodeURIComponent(versionTargetFile.id) + "/versions", fd, "POST");
             logActivity("Otpremanje nove verzije", versionTargetFile.name);
         } else {
             const pid = currentFolderId();
             if (pid) {
                 fd.append("parentId", pid);
             }
-            created = await sendMultipart("/files", fd, "POST");
+            await sendMultipart("/files", fd, "POST");
             logActivity("Otpremanje datoteke", file.name);
-            if (created && created.id) {
-                sessionUploadedFiles.unshift({
-                    ...created,
-                    sizeBytes: file.size
-                });
-            }
         }
 
         versionTargetFile = null;
