@@ -5,6 +5,7 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
+	"errors"
 
 	"bytes"
 	"mime/multipart"
@@ -251,6 +252,80 @@ func (repository *handlerTestRepository) DeleteFileAndVersions(
 	ownerID bson.ObjectID,
 ) error {
 	return repository.DeleteFile(ctx, fileID, ownerID)
+}
+
+func (repository *handlerTestRepository) FindFileByID(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) (*File, error) {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return nil, mongo.ErrNoDocuments
+	}
+
+	return file, nil
+}
+
+func (repository *handlerTestRepository) FindLatestFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+) (*FileVersion, error) {
+	var latest *FileVersion
+
+	for _, version := range repository.fileVersions {
+		if version.FileID != fileID {
+			continue
+		}
+
+		if latest == nil || version.VersionNumber > latest.VersionNumber {
+			latest = version
+		}
+	}
+
+	if latest == nil {
+		return nil, mongo.ErrNoDocuments
+	}
+
+	return latest, nil
+}
+
+func (repository *handlerTestRepository) UpdateFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	expectedVersion int,
+	newVersion int,
+	updatedAt time.Time,
+) error {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	if file.CurrentVersion != expectedVersion {
+		return errors.New("file version changed concurrently")
+	}
+
+	file.CurrentVersion = newVersion
+	file.UpdatedAt = updatedAt
+
+	return nil
+}
+
+func (repository *handlerTestRepository) DeleteFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	versionNumber int,
+) error {
+	for versionID, version := range repository.fileVersions {
+		if version.FileID == fileID && version.VersionNumber == versionNumber {
+			delete(repository.fileVersions, versionID)
+			return nil
+		}
+	}
+
+	return nil
 }
 
 func TestCreateFolderSuccessfully(t *testing.T) {
@@ -1124,6 +1199,443 @@ func TestUploadFileWithMultipleFiles(t *testing.T) {
 		t.Fatalf(
 			"expected status %d, got %d: %s",
 			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestUploadFileVersionThroughHTTPSuccessfully(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+	objectStore := newFakeObjectStorage()
+	service := NewServiceWithDependencies(
+		repository,
+		objectStore,
+		newFakeQuotaManager(),
+	)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	// First upload the original file.
+	oldContent := "Originalni sadrzaj"
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		oldContent,
+		"",
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf(
+			"initial upload: expected status %d, got %d: %s",
+			http.StatusCreated,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var originalFile File
+	if err := json.NewDecoder(response.Body).Decode(&originalFile); err != nil {
+		t.Fatalf("decode original file: %v", err)
+	}
+
+	var originalVersion *FileVersion
+	for _, version := range repository.fileVersions {
+		originalVersion = version
+	}
+
+	if originalVersion == nil {
+		t.Fatal("expected original file version")
+	}
+
+	oldObjectKey := originalVersion.ObjectKey
+
+	// Upload a new version of the existing file.
+	newContent := "Novi sadrzaj dokumenta"
+	request = newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		newContent,
+		"",
+	)
+
+	request.URL.Path = "/files/" + originalFile.ID.Hex() + "/versions"
+
+	response = httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusCreated {
+		t.Fatalf(
+			"version upload: expected status %d, got %d: %s",
+			http.StatusCreated,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	var updatedFile File
+	if err := json.NewDecoder(response.Body).Decode(&updatedFile); err != nil {
+		t.Fatalf("decode updated file: %v", err)
+	}
+
+	if updatedFile.ID != originalFile.ID {
+		t.Error("file ID should remain unchanged")
+	}
+
+	if updatedFile.OwnerID != userID {
+		t.Error("file owner should remain unchanged")
+	}
+
+	if updatedFile.CurrentVersion != 2 {
+		t.Errorf(
+			"expected current version 2, got %d",
+			updatedFile.CurrentVersion,
+		)
+	}
+
+	if len(repository.files) != 1 {
+		t.Errorf(
+			"expected 1 file in repository, got %d",
+			len(repository.files),
+		)
+	}
+
+	if len(repository.fileVersions) != 2 {
+		t.Fatalf(
+			"expected 2 file versions, got %d",
+			len(repository.fileVersions),
+		)
+	}
+
+	var newVersion *FileVersion
+
+	for _, version := range repository.fileVersions {
+		if version.VersionNumber == 2 {
+			newVersion = version
+			break
+		}
+	}
+
+	if newVersion == nil {
+		t.Fatal("expected second file version")
+	}
+
+	if newVersion.FileID != originalFile.ID {
+		t.Error("new version references incorrect file ID")
+	}
+
+	if newVersion.SizeBytes != int64(len(newContent)) {
+		t.Errorf(
+			"expected size %d, got %d",
+			len(newContent),
+			newVersion.SizeBytes,
+		)
+	}
+
+	if newVersion.ObjectKey == oldObjectKey {
+		t.Error("new version should have a different object key")
+	}
+
+	if objectStore.objects[oldObjectKey] != oldContent {
+		t.Error("original file content should remain unchanged")
+	}
+
+	if objectStore.objects[newVersion.ObjectKey] != newContent {
+		t.Error("new file content was not stored correctly")
+	}
+
+	if len(objectStore.objects) != 2 {
+		t.Errorf(
+			"expected 2 objects in storage, got %d",
+			len(objectStore.objects),
+		)
+	}
+}
+
+func TestUploadFileVersionRejectsAnotherUsersFile(t *testing.T) {
+	publicKey, privateKey, err := ed25519.GenerateKey(rand.Reader)
+	if err != nil {
+		t.Fatalf("generate test key: %v", err)
+	}
+
+	userID := bson.NewObjectID()
+	anotherUserID := bson.NewObjectID()
+
+	token, err := platform.SignToken(
+		privateKey,
+		userID.Hex(),
+		"user",
+		time.Hour,
+	)
+	if err != nil {
+		t.Fatalf("sign test token: %v", err)
+	}
+
+	repository := newHandlerTestRepository()
+	objectStore := newFakeObjectStorage()
+
+	now := time.Now().UTC()
+	fileID := bson.NewObjectID()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        anotherUserID,
+		Name:           "tudji-dokument.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "originalni-objekat",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+	repository.fileVersions[version.ID] = version
+	objectStore.objects[version.ObjectKey] = "old content"
+
+	service := NewServiceWithDependencies(
+		repository,
+		objectStore,
+		newFakeQuotaManager(),
+	)
+	handler := NewHandler(service, publicKey)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		"novi sadrzaj",
+		"",
+	)
+	request.URL.Path = "/files/" + fileID.Hex() + "/versions"
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusNotFound {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusNotFound,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version, got %d", len(repository.fileVersions))
+	}
+
+	if len(objectStore.objects) != 1 {
+		t.Errorf("expected original object only, got %d objects", len(objectStore.objects))
+	}
+}
+
+func TestUploadFileVersionWithInvalidFileID(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := newUploadRequest(
+		t,
+		token,
+		"dokument.txt",
+		"novi sadrzaj",
+		"",
+	)
+	request.URL.Path = "/files/neispravan-id/versions"
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestUploadFileVersionWithoutAuthorization(t *testing.T) {
+	handler := NewHandler(nil, nil)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files/"+bson.NewObjectID().Hex()+"/versions",
+		nil,
+	)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusUnauthorized {
+		t.Fatalf(
+			"expected status %d, got %d",
+			http.StatusUnauthorized,
+			response.Code,
+		)
+	}
+}
+
+func TestUploadFileVersionWithoutFile(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files/"+bson.NewObjectID().Hex()+"/versions",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestUploadFileVersionRejectsMultipleFiles(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	for _, filename := range []string{"prvi.txt", "drugi.txt"} {
+		part, err := writer.CreateFormFile("file", filename)
+		if err != nil {
+			t.Fatalf("create form file: %v", err)
+		}
+
+		if _, err := part.Write([]byte("test content")); err != nil {
+			t.Fatalf("write file content: %v", err)
+		}
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files/"+bson.NewObjectID().Hex()+"/versions",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusBadRequest {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusBadRequest,
+			response.Code,
+			response.Body.String(),
+		)
+	}
+}
+
+func TestUploadFileVersionTooLarge(t *testing.T) {
+	handler, token := createTestHandler(t)
+
+	mux := http.NewServeMux()
+	handler.Routes(mux)
+
+	var body bytes.Buffer
+	writer := multipart.NewWriter(&body)
+
+	part, err := writer.CreateFormFile("file", "large.txt")
+	if err != nil {
+		t.Fatalf("create form file: %v", err)
+	}
+
+	content := bytes.Repeat([]byte("a"), maxUploadSize+1)
+	if _, err := part.Write(content); err != nil {
+		t.Fatalf("write file content: %v", err)
+	}
+
+	if err := writer.Close(); err != nil {
+		t.Fatalf("close multipart writer: %v", err)
+	}
+
+	request := httptest.NewRequest(
+		http.MethodPost,
+		"/files/"+bson.NewObjectID().Hex()+"/versions",
+		&body,
+	)
+	request.Header.Set("Content-Type", writer.FormDataContentType())
+	request.Header.Set("Authorization", "Bearer "+token)
+
+	response := httptest.NewRecorder()
+	mux.ServeHTTP(response, request)
+
+	if response.Code != http.StatusRequestEntityTooLarge {
+		t.Fatalf(
+			"expected status %d, got %d: %s",
+			http.StatusRequestEntityTooLarge,
 			response.Code,
 			response.Body.String(),
 		)

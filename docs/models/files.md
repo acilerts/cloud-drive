@@ -1,5 +1,7 @@
 # Files servis – Modeli podataka
 
+Files servis upravlja metapodacima o fajlovima, njihovim verzijama i folderima.
+
 Svaka verzija fajla ima sopstveni objectKey, koji omogućava pronalaženje njenog sadržaja u MinIO skladištu.
 
 Files servis koristi MongoDB za čuvanje metapodataka o fajlovima, folderima i njihovim verzijama, dok se stvarni sadržaj fajlova čuva u MinIO skladištu.
@@ -60,7 +62,7 @@ Sadrži podatke o pojedinačnim verzijama fajlova.
 
 - `folders`: složeni indeks nad `ownerId` i `parentId`.
 - `files`: složeni indeks nad `ownerId` i `parentId`.
-- file_versions: jedinstveni složeni indeks nad fileId i versionNumber, koji sprečava postojanje dve verzije sa istim rednim brojem za isti fajl.
+- `file_versions`: jedinstveni složeni indeks nad `fileId` i `versionNumber`, koji sprečava postojanje dve verzije sa istim rednim brojem za isti fajl.
 
 # HTTP API
 
@@ -147,3 +149,44 @@ Otprema fajl u root direktorijum ili u postojeći folder. Sadržaj fajla čuva s
 - `404 Not Found` – roditeljski folder ne postoji ili nije dostupan.
 - `413 Request Entity Too Large` – fajl ili HTTP zahtev je prevelik.
 - `500 Internal Server Error` – greška pri upload-u fajla.
+
+## POST /files/{fileId}/versions – Upload nove verzije fajla
+
+Otprema novu verziju postojećeg fajla. Nova verzija se čuva kao zaseban objekat u MinIO skladištu, dok se njeni metapodaci čuvaju u MongoDB bazi.
+
+Prethodne verzije fajla ostaju sačuvane, a broj trenutno važeće verzije i vreme poslednje izmene fajla se ažuriraju.
+
+**Zaglavlja:**
+- `Authorization: Bearer <token>`
+- `Content-Type: multipart/form-data`
+
+**Parametri putanje:**
+
+| Parametar | Tip | Obavezno | Opis |
+|---|---|---|---|
+| `fileId` | ObjectID | Da | Identifikator postojećeg fajla |
+
+**Polja zahteva:**
+
+| Polje | Tip | Obavezno | Opis |
+|---|---|---|---|
+| `file` | File | Da | Novi sadržaj fajla |
+
+**Ograničenja:**
+- Dozvoljen je tačno jedan fajl po zahtevu.
+- Maksimalna veličina fajla je 50 MiB.
+- Fajl mora pripadati autentifikovanom korisniku.
+- Nije dozvoljeno dodavanje verzije fajlu drugog korisnika.
+- Svaka nova verzija dobija sledeći redni broj.
+- Prethodne verzije ostaju sačuvane u MinIO skladištu i MongoDB bazi.
+- Svaka verzija ima sopstveni `objectKey`.
+- Nakon uspešnog dodavanja verzije ažuriraju se `currentVersion` i `updatedAt` zapisa fajla.
+- Pre otpremanja sadržaja proverava se raspoloživa korisnička kvota.
+
+**HTTP odgovori:**
+- `201 Created` – nova verzija uspešno otpremljena.
+- `400 Bad Request` – neispravan ID fajla, multipart zahtev ili nedostaje fajl.
+- `401 Unauthorized` – nedostaje ili nije validan token.
+- `404 Not Found` – fajl ne postoji ili nije dostupan autentifikovanom korisniku.
+- `413 Request Entity Too Large` – fajl ili HTTP zahtev je prevelik.
+- `500 Internal Server Error` – greška pri otpremanju nove verzije ili ažuriranju metapodataka.

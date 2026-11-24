@@ -6,16 +6,18 @@ import (
 	"io"
 	"strings"
 	"testing"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
 )
 
 type fakeFolderRepository struct {
-	folders      map[bson.ObjectID]*Folder
-	files        map[bson.ObjectID]*File
-	fileVersions map[bson.ObjectID]*FileVersion
-	versionError error
+	folders            map[bson.ObjectID]*Folder
+	files              map[bson.ObjectID]*File
+	fileVersions       map[bson.ObjectID]*FileVersion
+	versionError       error
+	updateVersionError error
 }
 
 func (repository *fakeFolderRepository) FindFolders(
@@ -180,6 +182,83 @@ func (repository *fakeFolderRepository) DeleteFileAndVersions(
 	}
 
 	delete(repository.files, fileID)
+
+	return nil
+}
+
+func (repository *fakeFolderRepository) FindFileByID(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) (*File, error) {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return nil, mongo.ErrNoDocuments
+	}
+
+	return file, nil
+}
+
+func (repository *fakeFolderRepository) FindLatestFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+) (*FileVersion, error) {
+	var latest *FileVersion
+
+	for _, version := range repository.fileVersions {
+		if version.FileID != fileID {
+			continue
+		}
+
+		if latest == nil || version.VersionNumber > latest.VersionNumber {
+			latest = version
+		}
+	}
+
+	if latest == nil {
+		return nil, mongo.ErrNoDocuments
+	}
+
+	return latest, nil
+}
+
+func (repository *fakeFolderRepository) UpdateFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	expectedVersion int,
+	newVersion int,
+	updatedAt time.Time,
+) error {
+	if repository.updateVersionError != nil {
+		return repository.updateVersionError
+	}
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	if file.CurrentVersion != expectedVersion {
+		return errors.New("file version changed concurrently")
+	}
+
+	file.CurrentVersion = newVersion
+	file.UpdatedAt = updatedAt
+
+	return nil
+}
+
+func (repository *fakeFolderRepository) DeleteFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	versionNumber int,
+) error {
+	for versionID, version := range repository.fileVersions {
+		if version.FileID == fileID && version.VersionNumber == versionNumber {
+			delete(repository.fileVersions, versionID)
+			return nil
+		}
+	}
 
 	return nil
 }
@@ -1408,5 +1487,909 @@ func TestUploadFileKeepsDataWhenReservationStatusIsUnexpected(t *testing.T) {
 
 	if quotaManager.releaseCalls != 0 {
 		t.Errorf("expected no quota release, got %d calls", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileVersionSuccessfully(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+
+	oldObjectKey := "uploads/test/document-v1.txt"
+	newObjectKey := "uploads/test/document-v2.txt"
+
+	oldContent := "old file content"
+	newContent := "updated file content"
+
+	oldUpdatedAt := time.Now().UTC().Add(-time.Hour)
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      oldUpdatedAt,
+		UpdatedAt:      oldUpdatedAt,
+	}
+
+	repository.files[fileID] = file
+
+	firstVersion := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     oldObjectKey,
+		SizeBytes:     int64(len(oldContent)),
+		ContentType:   "text/plain",
+		CreatedAt:     oldUpdatedAt,
+	}
+
+	repository.fileVersions[firstVersion.ID] = firstVersion
+	storage.objects[oldObjectKey] = oldContent
+
+	updatedFile, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		newObjectKey,
+		strings.NewReader(newContent),
+		int64(len(newContent)),
+		"text/plain",
+	)
+
+	if err != nil {
+		t.Fatalf("upload new file version: %v", err)
+	}
+
+	if updatedFile.CurrentVersion != 2 {
+		t.Errorf(
+			"expected current version 2, got %d",
+			updatedFile.CurrentVersion,
+		)
+	}
+
+	if updatedFile.UpdatedAt.Equal(oldUpdatedAt) {
+		t.Error("file UpdatedAt should be updated")
+	}
+
+	if updatedFile.Name != "document.txt" {
+		t.Errorf("file name changed unexpectedly: %s", updatedFile.Name)
+	}
+
+	if len(repository.fileVersions) != 2 {
+		t.Fatalf(
+			"expected 2 file versions, got %d",
+			len(repository.fileVersions),
+		)
+	}
+
+	if storage.objects[oldObjectKey] != oldContent {
+		t.Error("previous file version content was changed")
+	}
+
+	if storage.objects[newObjectKey] != newContent {
+		t.Error("new file version content was not uploaded correctly")
+	}
+
+	var secondVersion *FileVersion
+
+	for _, version := range repository.fileVersions {
+		if version.VersionNumber == 2 {
+			secondVersion = version
+			break
+		}
+	}
+
+	if secondVersion == nil {
+		t.Fatal("second file version was not created")
+	}
+
+	if secondVersion.ObjectKey != newObjectKey {
+		t.Errorf(
+			"expected object key %q, got %q",
+			newObjectKey,
+			secondVersion.ObjectKey,
+		)
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 quota reservation, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.reservedBytes != int64(len(newContent)) {
+		t.Errorf(
+			"expected %d reserved bytes, got %d",
+			len(newContent),
+			quotaManager.reservedBytes,
+		)
+	}
+
+	if quotaManager.commitCalls != 1 {
+		t.Errorf("expected 1 quota commit, got %d", quotaManager.commitCalls)
+	}
+}
+
+func TestUploadFileVersionRejectsFileNotOwnedByUser(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	anotherUserID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+
+	repository.files[fileID] = &File{
+		ID:             fileID,
+		OwnerID:        anotherUserID,
+		Name:           "private.txt",
+		CurrentVersion: 1,
+	}
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/new-version.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Fatalf("expected ErrFileNotFound, got %v", err)
+	}
+
+	if quotaManager.reserveCalls != 0 {
+		t.Errorf("expected no quota reservation, got %d", quotaManager.reserveCalls)
+	}
+
+	if len(storage.objects) != 0 {
+		t.Errorf("expected no uploaded objects, got %d", len(storage.objects))
+	}
+}
+
+func TestUploadFileVersionRejectsQuotaReservation(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.reserveError = errors.New("quota exceeded")
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected quota reservation error")
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 reservation call, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected no commit calls, got %d", quotaManager.commitCalls)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version, got %d", len(repository.fileVersions))
+	}
+
+	if len(storage.objects) != 0 {
+		t.Errorf("expected no uploaded objects, got %d", len(storage.objects))
+	}
+}
+
+func TestUploadFileVersionReleasesQuotaOnUploadError(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	storage.uploadError = errors.New("minio upload failed")
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected upload error")
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 reservation call, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 release call, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected no commit calls, got %d", quotaManager.commitCalls)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version, got %d", len(repository.fileVersions))
+	}
+}
+
+func TestUploadFileVersionCleansUpOnMetadataError(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	repository.versionError = errors.New("database insert failed")
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	storage.objects[version.ObjectKey] = "old content"
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected metadata creation error")
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 reservation call, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 release call, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected no commit calls, got %d", quotaManager.commitCalls)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version, got %d", len(repository.fileVersions))
+	}
+
+	if storage.objects[version.ObjectKey] != "old content" {
+		t.Error("previous version content was changed")
+	}
+
+	if len(storage.objects) != 1 {
+		t.Errorf("expected only previous object to remain, got %d", len(storage.objects))
+	}
+}
+
+func TestUploadFileVersionCleansUpOnCurrentVersionUpdateError(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	repository.updateVersionError = errors.New("database update failed")
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v3.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected current version update error")
+	}
+
+	if quotaManager.reserveCalls != 1 {
+		t.Errorf("expected 1 reservation call, got %d", quotaManager.reserveCalls)
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 release call, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.commitCalls != 0 {
+		t.Errorf("expected no commit calls, got %d", quotaManager.commitCalls)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version after cleanup, got %d", len(repository.fileVersions))
+	}
+
+	if len(storage.objects) != 0 {
+		t.Errorf("expected no uploaded objects, got %d", len(storage.objects))
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1 to remain, got %d", file.CurrentVersion)
+	}
+}
+
+func TestUploadFileVersionCommitErrorButReservationCommitted(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit response lost")
+	quotaManager.reservationStatus = "committed"
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+
+	updatedFile, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err != nil {
+		t.Fatalf("expected successful upload after committed reservation, got %v", err)
+	}
+
+	if updatedFile.CurrentVersion != 2 {
+		t.Errorf("expected current version 2, got %d", updatedFile.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 2 {
+		t.Errorf("expected 2 versions, got %d", len(repository.fileVersions))
+	}
+
+	if len(storage.objects) != 1 {
+		t.Errorf("expected 1 newly uploaded object, got %d", len(storage.objects))
+	}
+
+	if quotaManager.commitCalls != 1 {
+		t.Errorf("expected 1 commit call, got %d", quotaManager.commitCalls)
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no release calls, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileVersionRollsBackWhenReservationStillReserved(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit failed")
+	quotaManager.reservationStatus = "reserved"
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	storage.objects[version.ObjectKey] = "old content"
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected commit error")
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1 after rollback, got %d", file.CurrentVersion)
+	}
+
+	if !file.UpdatedAt.Equal(now) {
+		t.Error("expected UpdatedAt to be restored")
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version after rollback, got %d", len(repository.fileVersions))
+	}
+
+	if storage.objects[version.ObjectKey] != "old content" {
+		t.Error("previous version content was changed")
+	}
+
+	if len(storage.objects) != 1 {
+		t.Errorf("expected only previous object to remain, got %d", len(storage.objects))
+	}
+
+	if quotaManager.releaseCalls != 1 {
+		t.Errorf("expected 1 release call, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+}
+
+func TestUploadFileVersionRollsBackWhenReservationAlreadyReleased(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit failed")
+	quotaManager.reservationStatus = "released"
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	storage.objects[version.ObjectKey] = "old content"
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		"uploads/document-v2.txt",
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected commit error")
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf("expected current version 1, got %d", file.CurrentVersion)
+	}
+
+	if !file.UpdatedAt.Equal(now) {
+		t.Error("expected UpdatedAt to be restored")
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf("expected 1 version after rollback, got %d", len(repository.fileVersions))
+	}
+
+	if storage.objects[version.ObjectKey] != "old content" {
+		t.Error("previous version content was changed")
+	}
+
+	if len(storage.objects) != 1 {
+		t.Errorf("expected only previous object to remain, got %d", len(storage.objects))
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no additional release calls, got %d", quotaManager.releaseCalls)
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+}
+
+func TestUploadFileVersionPreservesDataWhenReservationStatusCheckFails(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit response lost")
+	quotaManager.statusError = errors.New("quota service unavailable")
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     "uploads/document-v1.txt",
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	storage.objects[version.ObjectKey] = "old content"
+
+	newObjectKey := "uploads/document-v2.txt"
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		newObjectKey,
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected reservation status check error")
+	}
+
+	if file.CurrentVersion != 2 {
+		t.Errorf("expected current version 2 to be preserved, got %d", file.CurrentVersion)
+	}
+
+	if len(repository.fileVersions) != 2 {
+		t.Errorf("expected 2 versions to be preserved, got %d", len(repository.fileVersions))
+	}
+
+	if storage.objects[version.ObjectKey] != "old content" {
+		t.Error("previous version content was changed")
+	}
+
+	if storage.objects[newObjectKey] != "new content" {
+		t.Error("new version content should be preserved")
+	}
+
+	if quotaManager.statusCalls != 1 {
+		t.Errorf("expected 1 status check, got %d", quotaManager.statusCalls)
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf("expected no release calls, got %d", quotaManager.releaseCalls)
+	}
+}
+
+func TestUploadFileVersionDoesNotReleaseQuotaWhenRollbackFails(t *testing.T) {
+	repository := newFakeFolderRepository()
+	storage := newFakeObjectStorage()
+	quotaManager := newFakeQuotaManager()
+
+	quotaManager.commitError = errors.New("commit failed")
+	quotaManager.reservationStatus = "reserved"
+	storage.deleteError = errors.New("object deletion failed")
+
+	service := NewServiceWithDependencies(
+		repository,
+		storage,
+		quotaManager,
+	)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+	now := time.Now().UTC()
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "document.txt",
+		CurrentVersion: 1,
+		CreatedAt:      now,
+		UpdatedAt:      now,
+	}
+
+	repository.files[fileID] = file
+
+	oldObjectKey := "uploads/document-v1.txt"
+	newObjectKey := "uploads/document-v2.txt"
+
+	version := &FileVersion{
+		ID:            bson.NewObjectID(),
+		FileID:        fileID,
+		VersionNumber: 1,
+		ObjectKey:     oldObjectKey,
+		SizeBytes:     10,
+		ContentType:   "text/plain",
+		CreatedAt:     now,
+	}
+
+	repository.fileVersions[version.ID] = version
+	storage.objects[oldObjectKey] = "old content"
+
+	_, err := service.UploadFileVersion(
+		context.Background(),
+		ownerID,
+		fileID,
+		newObjectKey,
+		strings.NewReader("new content"),
+		int64(len("new content")),
+		"text/plain",
+	)
+
+	if err == nil {
+		t.Fatal("expected error when rollback fails")
+	}
+
+	if quotaManager.releaseCalls != 0 {
+		t.Errorf(
+			"expected no quota release when rollback fails, got %d",
+			quotaManager.releaseCalls,
+		)
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Errorf(
+			"expected current version 1 after rollback, got %d",
+			file.CurrentVersion,
+		)
+	}
+
+	if len(repository.fileVersions) != 1 {
+		t.Errorf(
+			"expected 1 version after rollback, got %d",
+			len(repository.fileVersions),
+		)
+	}
+
+	if storage.objects[newObjectKey] != "new content" {
+		t.Error("expected new object to remain because deletion failed")
 	}
 }

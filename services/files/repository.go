@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"time"
 
 	"go.mongodb.org/mongo-driver/v2/bson"
 	"go.mongodb.org/mongo-driver/v2/mongo"
@@ -241,6 +242,101 @@ func (repository *Repository) DeleteFileAndVersions(
 
 	if result.DeletedCount != 1 {
 		return fmt.Errorf("file was not deleted")
+	}
+
+	return nil
+}
+
+func (repository *Repository) FindFileByID(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+) (*File, error) {
+	var file File
+
+	err := repository.files.FindOne(
+		ctx,
+		bson.M{
+			"_id":     fileID,
+			"ownerId": ownerID,
+		},
+	).Decode(&file)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &file, nil
+}
+
+func (repository *Repository) FindLatestFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+) (*FileVersion, error) {
+	var version FileVersion
+
+	err := repository.fileVersions.FindOne(
+		ctx,
+		bson.M{"fileId": fileID},
+		options.FindOne().SetSort(bson.D{
+			{Key: "versionNumber", Value: -1},
+		}),
+	).Decode(&version)
+
+	if err != nil {
+		return nil, err
+	}
+
+	return &version, nil
+}
+
+func (repository *Repository) UpdateFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	expectedVersion int,
+	newVersion int,
+	updatedAt time.Time,
+) error {
+	result, err := repository.files.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":            fileID,
+			"ownerId":        ownerID,
+			"currentVersion": expectedVersion,
+		},
+		bson.M{
+			"$set": bson.M{
+				"currentVersion": newVersion,
+				"updatedAt":      updatedAt,
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("update file version: %w", err)
+	}
+
+	if result.MatchedCount != 1 {
+		return fmt.Errorf("file version changed concurrently or file not found")
+	}
+
+	return nil
+}
+
+func (repository *Repository) DeleteFileVersion(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	versionNumber int,
+) error {
+	_, err := repository.fileVersions.DeleteOne(
+		ctx,
+		bson.M{
+			"fileId":        fileID,
+			"versionNumber": versionNumber,
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("delete file version: %w", err)
 	}
 
 	return nil
