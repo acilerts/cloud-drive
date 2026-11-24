@@ -150,6 +150,10 @@ func run(logger *slog.Logger) error {
 		return fmt.Errorf("ensure quota indexes: %w", err)
 	}
 
+	if err := store.EnsureQuotaReservationIndexes(idxCtx); err != nil {
+		return fmt.Errorf("ensure quota reservation indexes: %w", err)
+	}
+
 	app := &Server{
 		store:          store,
 		mailer:         &Mailer{host: smtpHost, port: smtpPort, from: mailFrom},

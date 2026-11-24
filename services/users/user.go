@@ -23,6 +23,8 @@ type User struct {
 	Role              string        `bson:"role"`
 	Status            string        `bson:"status"`
 	QuotaBytes        int64         `bson:"quotaBytes"`
+	UsedBytes         int64         `bson:"usedBytes"`
+	ReservedBytes     int64         `bson:"reservedBytes"`
 	PasswordChangedAt time.Time     `bson:"passwordChangedAt"`
 	CreatedAt         time.Time     `bson:"createdAt"`
 	FailedLogins      int           `bson:"failedLogins"`
@@ -48,3 +50,17 @@ type OTP struct {
 	ExpiresAt time.Time     `bson:"expiresAt"`
 	CreatedAt time.Time     `bson:"createdAt"`
 }
+
+type QuotaReservation struct {
+	ID        bson.ObjectID `bson:"_id" json:"reservationId"`
+	UserID    bson.ObjectID `bson:"userId" json:"-"`
+	Bytes     int64         `bson:"bytes" json:"bytes"`
+	Status    string        `bson:"status" json:"status"`
+	CreatedAt time.Time     `bson:"createdAt" json:"createdAt"`
+}
+
+const (
+	ReservationReserved  = "reserved"
+	ReservationCommitted = "committed"
+	ReservationReleased  = "released"
+)

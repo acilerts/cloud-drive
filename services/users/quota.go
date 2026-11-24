@@ -73,7 +73,21 @@ func (s *Server) QuotaRoutes(mux *http.ServeMux) {
 	mux.HandleFunc("GET /admin/quota-requests", s.handleAdminQuotaRequests)
 	mux.HandleFunc("POST /admin/quota-requests/{id}/approve", s.decideQuota(true))
 	mux.HandleFunc("POST /admin/quota-requests/{id}/reject", s.decideQuota(false))
-	mux.HandleFunc("GET /internal/users/{id}/quota", platform.RequireInternal(s.internalToken, s.logger, s.handleInternalQuota))
+
+	mux.HandleFunc("GET /internal/users/{id}/quota",
+		platform.RequireInternal(s.internalToken, s.logger, s.handleInternalQuota))
+
+	mux.HandleFunc("POST /internal/users/{id}/quota/reservations",
+		platform.RequireInternal(s.internalToken, s.logger, s.handleInternalReserveQuota))
+
+	mux.HandleFunc("POST /internal/users/{id}/quota/reservations/{reservationId}/commit",
+		platform.RequireInternal(s.internalToken, s.logger, s.handleInternalCommitQuota))
+
+	mux.HandleFunc("POST /internal/users/{id}/quota/reservations/{reservationId}/release",
+		platform.RequireInternal(s.internalToken, s.logger, s.handleInternalReleaseQuota))
+
+	mux.HandleFunc("GET /internal/users/{id}/quota/reservations/{reservationId}",
+		platform.RequireInternal(s.internalToken, s.logger, s.handleInternalQuotaReservationStatus))
 }
 
 func (s *Server) authorize(w http.ResponseWriter, r *http.Request, role string) (*platform.Claims, bool) {

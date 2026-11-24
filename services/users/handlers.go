@@ -9,6 +9,7 @@ import (
 	"net/url"
 	"time"
 
+	"go.mongodb.org/mongo-driver/v2/bson"
 	"golang.org/x/crypto/bcrypt"
 
 	"github.com/acilerts/cloud-drive/internal/platform"
@@ -161,4 +162,115 @@ func (s *Server) handleConfirm(w http.ResponseWriter, r *http.Request) {
 	}
 	s.logger.Info("account confirmed", "userId", userID.Hex())
 	platform.WriteJSON(w, http.StatusOK, map[string]string{"message": "account confirmed"})
+}
+
+type reserveQuotaRequest struct {
+	Bytes int64 `json:"bytes"`
+}
+
+func parseQuotaReservationIDs(r *http.Request) (bson.ObjectID, bson.ObjectID, error) {
+	userID, err := bson.ObjectIDFromHex(r.PathValue("id"))
+	if err != nil {
+		return bson.NilObjectID, bson.NilObjectID, err
+	}
+
+	reservationID, err := bson.ObjectIDFromHex(r.PathValue("reservationId"))
+	if err != nil {
+		return bson.NilObjectID, bson.NilObjectID, err
+	}
+
+	return userID, reservationID, nil
+}
+
+func (s *Server) handleQuotaReservationError(w http.ResponseWriter, err error, operation string) {
+	switch {
+	case errors.Is(err, ErrQuotaExceeded):
+		platform.WriteError(w, http.StatusConflict, "quota exceeded")
+
+	case errors.Is(err, ErrReservationNotFound), errors.Is(err, ErrNotFound):
+		platform.WriteError(w, http.StatusNotFound, "resource not found")
+
+	case errors.Is(err, ErrReservationInactive):
+		platform.WriteError(w, http.StatusConflict, "reservation is not active")
+
+	default:
+		s.internalError(w, operation, err)
+	}
+}
+
+func (s *Server) handleInternalReserveQuota(w http.ResponseWriter, r *http.Request) {
+	userID, err := bson.ObjectIDFromHex(r.PathValue("id"))
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid user id")
+		return
+	}
+
+	var req reserveQuotaRequest
+	if err := decodeJSON(w, r, &req); err != nil || req.Bytes <= 0 {
+		platform.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	reservation, err := s.store.ReserveQuota(r.Context(), userID, req.Bytes)
+	if err != nil {
+		s.handleQuotaReservationError(w, err, "reserve quota failed")
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusCreated, map[string]string{
+		"reservationId": reservation.ID.Hex(),
+		"status":        reservation.Status,
+	})
+}
+
+func (s *Server) handleInternalCommitQuota(w http.ResponseWriter, r *http.Request) {
+	userID, reservationID, err := parseQuotaReservationIDs(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid user or reservation id")
+		return
+	}
+
+	if err := s.store.CommitQuota(r.Context(), userID, reservationID); err != nil {
+		s.handleQuotaReservationError(w, err, "commit quota failed")
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": ReservationCommitted,
+	})
+}
+
+func (s *Server) handleInternalReleaseQuota(w http.ResponseWriter, r *http.Request) {
+	userID, reservationID, err := parseQuotaReservationIDs(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid user or reservation id")
+		return
+	}
+
+	if err := s.store.ReleaseQuota(r.Context(), userID, reservationID); err != nil {
+		s.handleQuotaReservationError(w, err, "release quota failed")
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": ReservationReleased,
+	})
+}
+
+func (s *Server) handleInternalQuotaReservationStatus(w http.ResponseWriter, r *http.Request) {
+	userID, reservationID, err := parseQuotaReservationIDs(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid user or reservation id")
+		return
+	}
+
+	status, err := s.store.GetQuotaReservationStatus(r.Context(), userID, reservationID)
+	if err != nil {
+		s.handleQuotaReservationError(w, err, "get quota reservation status failed")
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusOK, map[string]string{
+		"status": status,
+	})
 }
