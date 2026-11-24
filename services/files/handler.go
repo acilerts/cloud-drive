@@ -36,9 +36,16 @@ type createFolderRequest struct {
 	ParentID *string `json:"parentId"`
 }
 
+type renameRequest struct {
+	Name string `json:"name"`
+}
+
 func (handler *Handler) Routes(mux *http.ServeMux) {
 	mux.HandleFunc("POST /folders", handler.createFolder)
 	mux.HandleFunc("GET /folders", handler.listFolders)
+	mux.HandleFunc("GET /folders/contents", handler.listFolderContents)
+	mux.HandleFunc("PATCH /folders/{folderId}", handler.renameFolder)
+	mux.HandleFunc("PATCH /files/{fileId}", handler.renameFile)
 	mux.HandleFunc("POST /files", handler.uploadFile)
 	mux.HandleFunc("POST /files/{fileId}/versions", handler.uploadFileVersion)
 }
@@ -175,6 +182,148 @@ func (handler *Handler) listFolders(
 	}
 
 	platform.WriteJSON(w, http.StatusOK, folders)
+}
+
+func (handler *Handler) listFolderContents(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	var parentID *bson.ObjectID
+
+	parentIDValue := r.URL.Query().Get("parentId")
+
+	if parentIDValue != "" {
+		id, err := bson.ObjectIDFromHex(parentIDValue)
+		if err != nil {
+			platform.WriteError(w, http.StatusBadRequest, "invalid parentId")
+			return
+		}
+
+		parentID = &id
+	}
+
+	contents, err := handler.service.ListFolderContents(
+		r.Context(),
+		ownerID,
+		parentID,
+	)
+	if err != nil {
+		switch {
+		case errors.Is(err, ErrParentNotFound):
+			platform.WriteError(w, http.StatusNotFound, "parent folder not found")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not list folder contents")
+		}
+
+		return
+	}
+
+	platform.WriteJSON(w, http.StatusOK, contents)
+}
+
+func (handler *Handler) renameFolder(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	folderID, err := bson.ObjectIDFromHex(r.PathValue("folderId"))
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid folder ID")
+		return
+	}
+
+	var request renameRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := handler.service.RenameFolder(
+		r.Context(),
+		ownerID,
+		folderID,
+		request.Name,
+	); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidFolderName):
+			platform.WriteError(w, http.StatusBadRequest, "invalid folder name")
+
+		case errors.Is(err, ErrParentNotFound):
+			platform.WriteError(w, http.StatusNotFound, "folder not found")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not rename folder")
+		}
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
+}
+
+func (handler *Handler) renameFile(
+	w http.ResponseWriter,
+	r *http.Request,
+) {
+	ownerID, err := handler.authenticate(r)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "unauthorized")
+		return
+	}
+
+	fileID, err := bson.ObjectIDFromHex(r.PathValue("fileId"))
+	if err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid file ID")
+		return
+	}
+
+	var request renameRequest
+
+	decoder := json.NewDecoder(r.Body)
+	decoder.DisallowUnknownFields()
+
+	if err := decoder.Decode(&request); err != nil {
+		platform.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if err := handler.service.RenameFile(
+		r.Context(),
+		ownerID,
+		fileID,
+		request.Name,
+	); err != nil {
+		switch {
+		case errors.Is(err, ErrInvalidFileName):
+			platform.WriteError(w, http.StatusBadRequest, "invalid file name")
+
+		case errors.Is(err, ErrFileNotFound):
+			platform.WriteError(w, http.StatusNotFound, "file not found")
+
+		default:
+			platform.WriteError(w, http.StatusInternalServerError, "could not rename file")
+		}
+
+		return
+	}
+
+	w.WriteHeader(http.StatusNoContent)
 }
 
 func (handler *Handler) uploadFile(

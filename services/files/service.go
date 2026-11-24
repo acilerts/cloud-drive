@@ -36,6 +36,28 @@ type FolderRepository interface {
 		parentID *bson.ObjectID,
 	) ([]Folder, error)
 
+	FindFiles(
+		ctx context.Context,
+		ownerID bson.ObjectID,
+		parentID *bson.ObjectID,
+	) ([]File, error)
+
+	RenameFolder(
+		ctx context.Context,
+		folderID bson.ObjectID,
+		ownerID bson.ObjectID,
+		name string,
+		updatedAt time.Time,
+	) error
+
+	RenameFile(
+		ctx context.Context,
+		fileID bson.ObjectID,
+		ownerID bson.ObjectID,
+		name string,
+		updatedAt time.Time,
+	) error
+
 	CreateFile(ctx context.Context, file *File) error
 
 	CreateFileVersion(ctx context.Context, version *FileVersion) error
@@ -95,6 +117,11 @@ type Service struct {
 	repository   FolderRepository
 	objectStore  ObjectStorage
 	quotaManager QuotaManager
+}
+
+type FolderContents struct {
+	Folders []Folder `json:"folders"`
+	Files   []File   `json:"files"`
 }
 
 func NewService(repository FolderRepository) *Service {
@@ -199,6 +226,133 @@ func (service *Service) ListFolders(
 		ctx,
 		ownerID,
 		parentID,
+	)
+}
+
+func (service *Service) ListFolderContents(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) (*FolderContents, error) {
+	if ownerID.IsZero() {
+		return nil, errors.New("invalid folder owner")
+	}
+
+	if parentID != nil {
+		_, err := service.repository.FindFolderByID(
+			ctx,
+			*parentID,
+			ownerID,
+		)
+
+		if err != nil {
+			if errors.Is(err, mongo.ErrNoDocuments) {
+				return nil, ErrParentNotFound
+			}
+
+			return nil, err
+		}
+	}
+
+	folders, err := service.repository.FindFolders(
+		ctx,
+		ownerID,
+		parentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	files, err := service.repository.FindFiles(
+		ctx,
+		ownerID,
+		parentID,
+	)
+	if err != nil {
+		return nil, err
+	}
+
+	return &FolderContents{
+		Folders: folders,
+		Files:   files,
+	}, nil
+}
+
+func (service *Service) RenameFolder(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	folderID bson.ObjectID,
+	name string,
+) error {
+	name = strings.TrimSpace(name)
+
+	if ownerID.IsZero() || folderID.IsZero() {
+		return ErrParentNotFound
+	}
+
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) {
+		return ErrInvalidFolderName
+	}
+
+	_, err := service.repository.FindFolderByID(
+		ctx,
+		folderID,
+		ownerID,
+	)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return ErrParentNotFound
+		}
+
+		return err
+	}
+
+	return service.repository.RenameFolder(
+		ctx,
+		folderID,
+		ownerID,
+		name,
+		time.Now().UTC(),
+	)
+}
+
+func (service *Service) RenameFile(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	fileID bson.ObjectID,
+	name string,
+) error {
+	name = strings.TrimSpace(name)
+
+	if ownerID.IsZero() || fileID.IsZero() {
+		return ErrFileNotFound
+	}
+
+	if name == "" || name == "." || name == ".." ||
+		strings.ContainsAny(name, `/\`) {
+		return ErrInvalidFileName
+	}
+
+	_, err := service.repository.FindFileByID(
+		ctx,
+		fileID,
+		ownerID,
+	)
+	if err != nil {
+		if errors.Is(err, mongo.ErrNoDocuments) {
+			return ErrFileNotFound
+		}
+
+		return err
+	}
+
+	return service.repository.RenameFile(
+		ctx,
+		fileID,
+		ownerID,
+		name,
+		time.Now().UTC(),
 	)
 }
 

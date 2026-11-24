@@ -48,6 +48,70 @@ func (repository *fakeFolderRepository) FindFolders(
 	return folders, nil
 }
 
+func (repository *fakeFolderRepository) FindFiles(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) ([]File, error) {
+	var files []File
+
+	for _, file := range repository.files {
+		if file.OwnerID != ownerID {
+			continue
+		}
+
+		if parentID == nil && file.ParentID != nil {
+			continue
+		}
+
+		if parentID != nil {
+			if file.ParentID == nil || *file.ParentID != *parentID {
+				continue
+			}
+		}
+
+		files = append(files, *file)
+	}
+
+	return files, nil
+}
+
+func (repository *fakeFolderRepository) RenameFolder(
+	ctx context.Context,
+	folderID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	folder, exists := repository.folders[folderID]
+	if !exists || folder.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	folder.Name = name
+	folder.UpdatedAt = updatedAt
+
+	return nil
+}
+
+func (repository *fakeFolderRepository) RenameFile(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	file, exists := repository.files[fileID]
+	if !exists || file.OwnerID != ownerID {
+		return mongo.ErrNoDocuments
+	}
+
+	file.Name = name
+	file.UpdatedAt = updatedAt
+
+	return nil
+}
+
 func newFakeFolderRepository() *fakeFolderRepository {
 	return &fakeFolderRepository{
 		folders:      make(map[bson.ObjectID]*Folder),
@@ -2391,5 +2455,362 @@ func TestUploadFileVersionDoesNotReleaseQuotaWhenRollbackFails(t *testing.T) {
 
 	if storage.objects[newObjectKey] != "new content" {
 		t.Error("expected new object to remain because deletion failed")
+	}
+}
+
+func TestListFolderContentsSuccessfully(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	parentID := bson.NewObjectID()
+
+	parentFolder := &Folder{
+		ID:      parentID,
+		OwnerID: ownerID,
+		Name:    "Documents",
+	}
+
+	subfolder := &Folder{
+		ID:       bson.NewObjectID(),
+		OwnerID:  ownerID,
+		Name:     "Projects",
+		ParentID: &parentID,
+	}
+
+	file := &File{
+		ID:       bson.NewObjectID(),
+		OwnerID:  ownerID,
+		Name:     "report.pdf",
+		ParentID: &parentID,
+	}
+
+	repository.folders[parentID] = parentFolder
+	repository.folders[subfolder.ID] = subfolder
+	repository.files[file.ID] = file
+
+	contents, err := service.ListFolderContents(
+		context.Background(),
+		ownerID,
+		&parentID,
+	)
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if len(contents.Folders) != 1 {
+		t.Fatalf(
+			"expected 1 subfolder, got %d",
+			len(contents.Folders),
+		)
+	}
+
+	if contents.Folders[0].ID != subfolder.ID {
+		t.Error("returned incorrect subfolder")
+	}
+
+	if len(contents.Files) != 1 {
+		t.Fatalf(
+			"expected 1 file, got %d",
+			len(contents.Files),
+		)
+	}
+
+	if contents.Files[0].ID != file.ID {
+		t.Error("returned incorrect file")
+	}
+}
+
+func TestListFolderContentsRejectsAnotherUsersFolder(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	anotherOwnerID := bson.NewObjectID()
+	parentID := bson.NewObjectID()
+
+	repository.folders[parentID] = &Folder{
+		ID:      parentID,
+		OwnerID: anotherOwnerID,
+		Name:    "Private",
+	}
+
+	contents, err := service.ListFolderContents(
+		context.Background(),
+		ownerID,
+		&parentID,
+	)
+
+	if contents != nil {
+		t.Error("expected nil contents for another user's folder")
+	}
+
+	if !errors.Is(err, ErrParentNotFound) {
+		t.Errorf(
+			"expected ErrParentNotFound, got %v",
+			err,
+		)
+	}
+}
+
+func TestRenameFolderSuccessfully(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	folderID := bson.NewObjectID()
+
+	oldTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	folder := &Folder{
+		ID:        folderID,
+		OwnerID:   ownerID,
+		Name:      "OldName",
+		CreatedAt: oldTime,
+		UpdatedAt: oldTime,
+	}
+
+	repository.folders[folderID] = folder
+
+	err := service.RenameFolder(
+		context.Background(),
+		ownerID,
+		folderID,
+		"NewName",
+	)
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if folder.Name != "NewName" {
+		t.Errorf("expected name NewName, got %s", folder.Name)
+	}
+
+	if !folder.UpdatedAt.After(oldTime) {
+		t.Error("expected UpdatedAt to be updated")
+	}
+
+	if !folder.CreatedAt.Equal(oldTime) {
+		t.Error("CreatedAt should remain unchanged")
+	}
+}
+
+func TestRenameFolderRejectsAnotherUsersFolder(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	anotherOwnerID := bson.NewObjectID()
+	folderID := bson.NewObjectID()
+
+	folder := &Folder{
+		ID:      folderID,
+		OwnerID: anotherOwnerID,
+		Name:    "Private",
+	}
+
+	repository.folders[folderID] = folder
+
+	err := service.RenameFolder(
+		context.Background(),
+		ownerID,
+		folderID,
+		"Renamed",
+	)
+
+	if !errors.Is(err, ErrParentNotFound) {
+		t.Errorf("expected ErrParentNotFound, got %v", err)
+	}
+
+	if folder.Name != "Private" {
+		t.Errorf(
+			"expected original name Private, got %s",
+			folder.Name,
+		)
+	}
+}
+
+func TestRenameFolderRejectsInvalidName(t *testing.T) {
+	invalidNames := []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"folder/name",
+		`folder\name`,
+	}
+
+	for _, name := range invalidNames {
+		t.Run(name, func(t *testing.T) {
+			repository := newFakeFolderRepository()
+			service := NewService(repository)
+
+			ownerID := bson.NewObjectID()
+			folderID := bson.NewObjectID()
+
+			folder := &Folder{
+				ID:      folderID,
+				OwnerID: ownerID,
+				Name:    "Original",
+			}
+
+			repository.folders[folderID] = folder
+
+			err := service.RenameFolder(
+				context.Background(),
+				ownerID,
+				folderID,
+				name,
+			)
+
+			if !errors.Is(err, ErrInvalidFolderName) {
+				t.Errorf(
+					"expected ErrInvalidFolderName, got %v",
+					err,
+				)
+			}
+
+			if folder.Name != "Original" {
+				t.Errorf(
+					"expected original name to remain unchanged, got %s",
+					folder.Name,
+				)
+			}
+		})
+	}
+}
+
+func TestRenameFileSuccessfully(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+
+	oldTime := time.Date(2025, 1, 1, 0, 0, 0, 0, time.UTC)
+
+	file := &File{
+		ID:             fileID,
+		OwnerID:        ownerID,
+		Name:           "old-report.pdf",
+		CurrentVersion: 1,
+		CreatedAt:      oldTime,
+		UpdatedAt:      oldTime,
+	}
+
+	repository.files[fileID] = file
+
+	err := service.RenameFile(
+		context.Background(),
+		ownerID,
+		fileID,
+		"new-report.pdf",
+	)
+
+	if err != nil {
+		t.Fatalf("expected no error, got %v", err)
+	}
+
+	if file.Name != "new-report.pdf" {
+		t.Errorf("expected new-report.pdf, got %s", file.Name)
+	}
+
+	if !file.UpdatedAt.After(oldTime) {
+		t.Error("expected UpdatedAt to be updated")
+	}
+
+	if !file.CreatedAt.Equal(oldTime) {
+		t.Error("CreatedAt should remain unchanged")
+	}
+
+	if file.CurrentVersion != 1 {
+		t.Error("renaming should not change the current file version")
+	}
+}
+
+func TestRenameFileRejectsAnotherUsersFile(t *testing.T) {
+	repository := newFakeFolderRepository()
+	service := NewService(repository)
+
+	ownerID := bson.NewObjectID()
+	anotherOwnerID := bson.NewObjectID()
+	fileID := bson.NewObjectID()
+
+	file := &File{
+		ID:      fileID,
+		OwnerID: anotherOwnerID,
+		Name:    "private.pdf",
+	}
+
+	repository.files[fileID] = file
+
+	err := service.RenameFile(
+		context.Background(),
+		ownerID,
+		fileID,
+		"renamed.pdf",
+	)
+
+	if !errors.Is(err, ErrFileNotFound) {
+		t.Errorf("expected ErrFileNotFound, got %v", err)
+	}
+
+	if file.Name != "private.pdf" {
+		t.Errorf(
+			"expected original name private.pdf, got %s",
+			file.Name,
+		)
+	}
+}
+
+func TestRenameFileRejectsInvalidName(t *testing.T) {
+	invalidNames := []string{
+		"",
+		"   ",
+		".",
+		"..",
+		"file/name.pdf",
+		`file\name.pdf`,
+	}
+
+	for _, name := range invalidNames {
+		t.Run(name, func(t *testing.T) {
+			repository := newFakeFolderRepository()
+			service := NewService(repository)
+
+			ownerID := bson.NewObjectID()
+			fileID := bson.NewObjectID()
+
+			file := &File{
+				ID:      fileID,
+				OwnerID: ownerID,
+				Name:    "original.pdf",
+			}
+
+			repository.files[fileID] = file
+
+			err := service.RenameFile(
+				context.Background(),
+				ownerID,
+				fileID,
+				name,
+			)
+
+			if !errors.Is(err, ErrInvalidFileName) {
+				t.Errorf(
+					"expected ErrInvalidFileName, got %v",
+					err,
+				)
+			}
+
+			if file.Name != "original.pdf" {
+				t.Errorf(
+					"expected original name to remain unchanged, got %s",
+					file.Name,
+				)
+			}
+		})
 	}
 }

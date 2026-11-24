@@ -341,3 +341,100 @@ func (repository *Repository) DeleteFileVersion(
 
 	return nil
 }
+
+func (repository *Repository) FindFiles(
+	ctx context.Context,
+	ownerID bson.ObjectID,
+	parentID *bson.ObjectID,
+) ([]File, error) {
+	filter := bson.M{
+		"ownerId":  ownerID,
+		"parentId": parentID,
+	}
+
+	cursor, err := repository.files.Find(
+		ctx,
+		filter,
+		options.Find().SetSort(bson.D{
+			{Key: "name", Value: 1},
+		}),
+	)
+	if err != nil {
+		return nil, fmt.Errorf("find files: %w", err)
+	}
+	defer cursor.Close(ctx)
+
+	var files []File
+
+	if err := cursor.All(ctx, &files); err != nil {
+		return nil, fmt.Errorf("decode files: %w", err)
+	}
+
+	if files == nil {
+		files = []File{}
+	}
+
+	return files, nil
+}
+
+func (repository *Repository) RenameFolder(
+	ctx context.Context,
+	folderID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	result, err := repository.folders.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":     folderID,
+			"ownerId": ownerID,
+		},
+		bson.M{
+			"$set": bson.M{
+				"name":      name,
+				"updatedAt": updatedAt,
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("rename folder: %w", err)
+	}
+
+	if result.MatchedCount != 1 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}
+
+func (repository *Repository) RenameFile(
+	ctx context.Context,
+	fileID bson.ObjectID,
+	ownerID bson.ObjectID,
+	name string,
+	updatedAt time.Time,
+) error {
+	result, err := repository.files.UpdateOne(
+		ctx,
+		bson.M{
+			"_id":     fileID,
+			"ownerId": ownerID,
+		},
+		bson.M{
+			"$set": bson.M{
+				"name":      name,
+				"updatedAt": updatedAt,
+			},
+		},
+	)
+	if err != nil {
+		return fmt.Errorf("rename file: %w", err)
+	}
+
+	if result.MatchedCount != 1 {
+		return mongo.ErrNoDocuments
+	}
+
+	return nil
+}
