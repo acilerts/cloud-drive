@@ -125,3 +125,17 @@ func (s *Store) FindUsersByIDs(ctx context.Context, ids []bson.ObjectID) (map[bs
 	}
 	return result, nil
 }
+
+func (s *Store) quotaReservations() *mongo.Collection {
+	return s.users.Database().Collection("quotaReservations")
+}
+
+func (s *Store) EnsureQuotaReservationIndexes(ctx context.Context) error {
+	_, err := s.quotaReservations().Indexes().CreateOne(ctx, mongo.IndexModel{
+		Keys: bson.D{
+			{Key: "userId", Value: 1},
+			{Key: "status", Value: 1},
+		},
+	})
+	return err
+}
