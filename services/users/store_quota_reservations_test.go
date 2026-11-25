@@ -252,3 +252,95 @@ func TestConcurrentReserveQuotaDoesNotExceedQuota(t *testing.T) {
 		t.Fatalf("expected ReservedBytes=1000, got %d", user.ReservedBytes)
 	}
 }
+
+func TestGetQuotaReservationStatus(t *testing.T) {
+	store := newQuotaTestStore(t)
+	ctx := context.Background()
+	userID := createQuotaTestUser(t, store, 1000, 100, StatusActive)
+
+	reservation, err := store.ReserveQuota(ctx, userID, 300)
+	if err != nil {
+		t.Fatalf("ReserveQuota returned error: %v", err)
+	}
+
+	status, err := store.GetQuotaReservationStatus(ctx, userID, reservation.ID)
+	if err != nil {
+		t.Fatalf("GetQuotaReservationStatus returned error: %v", err)
+	}
+	if status != ReservationReserved {
+		t.Fatalf("expected status %q, got %q", ReservationReserved, status)
+	}
+
+	if err := store.CommitQuota(ctx, userID, reservation.ID); err != nil {
+		t.Fatalf("CommitQuota returned error: %v", err)
+	}
+
+	status, err = store.GetQuotaReservationStatus(ctx, userID, reservation.ID)
+	if err != nil {
+		t.Fatalf("GetQuotaReservationStatus returned error: %v", err)
+	}
+	if status != ReservationCommitted {
+		t.Fatalf("expected status %q, got %q", ReservationCommitted, status)
+	}
+}
+
+func TestGetQuotaReservationStatusNotFound(t *testing.T) {
+	store := newQuotaTestStore(t)
+	ctx := context.Background()
+	userID := createQuotaTestUser(t, store, 1000, 0, StatusActive)
+
+	_, err := store.GetQuotaReservationStatus(ctx, userID, bson.NewObjectID())
+	if !errors.Is(err, ErrReservationNotFound) {
+		t.Fatalf("expected ErrReservationNotFound, got %v", err)
+	}
+}
+
+func TestGetQuotaReservationStatusRejectsAnotherUser(t *testing.T) {
+	store := newQuotaTestStore(t)
+	ctx := context.Background()
+
+	userID1 := createQuotaTestUser(t, store, 1000, 0, StatusActive)
+	userID2 := createQuotaTestUser(t, store, 1000, 0, StatusActive)
+
+	reservation, err := store.ReserveQuota(ctx, userID1, 300)
+	if err != nil {
+		t.Fatalf("ReserveQuota returned error: %v", err)
+	}
+
+	_, err = store.GetQuotaReservationStatus(ctx, userID2, reservation.ID)
+	if !errors.Is(err, ErrReservationNotFound) {
+		t.Fatalf("expected ErrReservationNotFound, got %v", err)
+	}
+}
+
+func TestCommitAndReleaseQuotaRejectInactiveReservation(t *testing.T) {
+	store := newQuotaTestStore(t)
+	ctx := context.Background()
+	userID := createQuotaTestUser(t, store, 1000, 0, StatusActive)
+
+	committedReservation, err := store.ReserveQuota(ctx, userID, 200)
+	if err != nil {
+		t.Fatalf("ReserveQuota returned error: %v", err)
+	}
+
+	if err := store.CommitQuota(ctx, userID, committedReservation.ID); err != nil {
+		t.Fatalf("CommitQuota returned error: %v", err)
+	}
+
+	if err := store.ReleaseQuota(ctx, userID, committedReservation.ID); !errors.Is(err, ErrReservationInactive) {
+		t.Fatalf("expected ErrReservationInactive when releasing committed reservation, got %v", err)
+	}
+
+	releasedReservation, err := store.ReserveQuota(ctx, userID, 300)
+	if err != nil {
+		t.Fatalf("ReserveQuota returned error: %v", err)
+	}
+
+	if err := store.ReleaseQuota(ctx, userID, releasedReservation.ID); err != nil {
+		t.Fatalf("ReleaseQuota returned error: %v", err)
+	}
+
+	if err := store.CommitQuota(ctx, userID, releasedReservation.ID); !errors.Is(err, ErrReservationInactive) {
+		t.Fatalf("expected ErrReservationInactive when committing released reservation, got %v", err)
+	}
+}
