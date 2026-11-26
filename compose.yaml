@@ -122,8 +122,45 @@ services:
     depends_on:
       - users
 
+
+  cassandra:
+    image: cassandra:5.0
+    restart: unless-stopped
+    environment:
+      CASSANDRA_CLUSTER_NAME: cloud-drive
+      MAX_HEAP_SIZE: 512M
+      HEAP_NEWSIZE: 128M
+    volumes:
+      - cassandra-data:/var/lib/cassandra
+    healthcheck:
+      test: ["CMD-SHELL", "cqlsh -e 'describe keyspaces' > /dev/null 2>&1"]
+      interval: 15s
+      timeout: 10s
+      retries: 20
+      start_period: 60s
+
+  notifications:
+    build:
+      context: .
+      dockerfile: services/notifications/Dockerfile
+    restart: unless-stopped
+    environment:
+      NOTIFICATIONS_PORT: ${NOTIFICATIONS_PORT:-8084}
+      CASSANDRA_HOSTS: cassandra
+      CASSANDRA_KEYSPACE: ${CASSANDRA_KEYSPACE:-cloud_drive_notifications}
+      JWT_PUBLIC_KEY_FILE: /run/secrets/jwt_public.pem
+      INTERNAL_API_TOKEN: ${INTERNAL_API_TOKEN:?set INTERNAL_API_TOKEN in .env}
+    volumes:
+      - ./keys/jwt_public.pem:/run/secrets/jwt_public.pem:ro
+    ports:
+      - "127.0.0.1:${NOTIFICATIONS_PORT:-8084}:${NOTIFICATIONS_PORT:-8084}"
+    depends_on:
+      cassandra:
+        condition: service_healthy
+
 volumes:
   mongo-data:
   minio-data:
+  cassandra-data:
 
 
