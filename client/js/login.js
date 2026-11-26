@@ -109,9 +109,7 @@ otpForm.addEventListener("submit", async (e) => {
         const res = await sendRequest("/login/verify", "POST", { email: currentEmail, otp: code });
         if (res.token) {
             localStorage.setItem("token", res.token);
-        }
-        if (res.user) {
-            localStorage.setItem("user", JSON.stringify(res.user));
+            localStorage.removeItem("user");
         }
         if (res.user && res.user.role === "admin") {
             window.location.href = "admin.html";
