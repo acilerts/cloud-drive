@@ -3,6 +3,7 @@ module github.com/acilerts/cloud-drive
 go 1.27.3
 
 require (
+	github.com/gocql/gocql v1.7.0
 	github.com/golang-jwt/jwt/v5 v5.3.1
 	github.com/minio/minio-go/v7 v7.4.1
 	go.mongodb.org/mongo-driver/v2 v2.10.0
@@ -12,7 +13,9 @@ require (
 require (
 	github.com/cespare/xxhash/v2 v2.3.0 // indirect
 	github.com/dustin/go-humanize v1.0.1 // indirect
+	github.com/golang/snappy v0.0.3 // indirect
 	github.com/google/uuid v1.6.0 // indirect
+	github.com/hailocab/go-hostpool v0.0.0-20160125115350-e80d13ce29ed // indirect
 	github.com/klauspost/compress v1.20.3 // indirect
 	github.com/klauspost/cpuid/v2 v2.4.0 // indirect
 	github.com/klauspost/crc32 v1.3.0 // indirect
@@ -30,5 +33,6 @@ require (
 	golang.org/x/sync v0.25.0 // indirect
 	golang.org/x/sys v0.50.0 // indirect
 	golang.org/x/text v0.44.0 // indirect
+	gopkg.in/inf.v0 v0.9.1 // indirect
 	gopkg.in/ini.v1 v1.67.3 // indirect
 )
