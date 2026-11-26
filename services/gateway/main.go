@@ -170,7 +170,8 @@ func parseServiceURL(key, raw string) (*url.URL, error) {
 }
 
 func isUsersPath(path string) bool {
-	return path == "/register" ||
+	return path == "/me" ||
+		path == "/register" ||
 		path == "/confirm" ||
 		path == "/login" || strings.HasPrefix(path, "/login/") ||
 		strings.HasPrefix(path, "/password/") ||

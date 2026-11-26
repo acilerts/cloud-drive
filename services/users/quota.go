@@ -67,6 +67,7 @@ func validateRequestedQuota(requested, current, max int64) string {
 }
 
 func (s *Server) QuotaRoutes(mux *http.ServeMux) {
+	mux.HandleFunc("GET /me", s.handleMe)
 	mux.HandleFunc("POST /quota/requests", s.handleCreateQuotaRequest)
 	mux.HandleFunc("GET /quota/requests/mine", s.handleMyQuotaRequests)
 	mux.HandleFunc("GET /admin/users", s.handleAdminUsers)
@@ -193,7 +194,39 @@ func (s *Server) handleMyQuotaRequests(w http.ResponseWriter, r *http.Request) {
 	}
 	platform.WriteJSON(w, http.StatusOK, map[string]any{
 		"quotaBytes": user.QuotaBytes,
+		"usedBytes":  user.UsedBytes,
 		"requests":   out,
+	})
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	claims, ok := s.authorize(w, r, "")
+	if !ok {
+		return
+	}
+	userID, err := bson.ObjectIDFromHex(claims.Subject)
+	if err != nil {
+		platform.WriteError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	user, err := s.store.FindUserByID(r.Context(), userID)
+	if errors.Is(err, ErrNotFound) {
+		platform.WriteError(w, http.StatusUnauthorized, "invalid or expired token")
+		return
+	}
+	if err != nil {
+		s.internalError(w, "find user failed", err)
+		return
+	}
+	platform.WriteJSON(w, http.StatusOK, map[string]any{
+		"id":         user.ID.Hex(),
+		"firstName":  user.FirstName,
+		"lastName":   user.LastName,
+		"email":      user.Email,
+		"role":       user.Role,
+		"status":     user.Status,
+		"quotaBytes": user.QuotaBytes,
+		"usedBytes":  user.UsedBytes,
 	})
 }
 
@@ -205,6 +238,7 @@ type adminUserDTO struct {
 	Role       string `json:"role"`
 	Status     string `json:"status"`
 	QuotaBytes int64  `json:"quotaBytes"`
+	UsedBytes  int64  `json:"usedBytes"`
 }
 
 func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
@@ -220,7 +254,7 @@ func (s *Server) handleAdminUsers(w http.ResponseWriter, r *http.Request) {
 	out := make([]adminUserDTO, 0, len(users))
 	for _, u := range users {
 		out = append(out, adminUserDTO{
-			ID: u.ID.Hex(), FirstName: u.FirstName, LastName: u.LastName, Email: u.Email, Role: u.Role, Status: u.Status, QuotaBytes: u.QuotaBytes,
+			ID: u.ID.Hex(), FirstName: u.FirstName, LastName: u.LastName, Email: u.Email, Role: u.Role, Status: u.Status, QuotaBytes: u.QuotaBytes, UsedBytes: u.UsedBytes,
 		})
 	}
 

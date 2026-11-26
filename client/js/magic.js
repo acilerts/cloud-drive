@@ -18,9 +18,7 @@ async function loginWithMagicLink() {
         const res = await sendRequest("/magic/login", "POST", { token });
         if (res.token) {
             localStorage.setItem("token", res.token);
-        }
-        if (res.user) {
-            localStorage.setItem("user", JSON.stringify(res.user));
+            localStorage.removeItem("user");
         }
 
         statusText.textContent = "Prijava uspesna";

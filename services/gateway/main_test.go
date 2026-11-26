@@ -73,6 +73,7 @@ func TestGatewayRouting(t *testing.T) {
 		{"GET", "/", http.StatusFound, ""},
 		{"GET", "/login.html", http.StatusOK, ""},
 		{"GET", "/index.html", http.StatusOK, ""},
+		{"GET", "/me", http.StatusOK, "users:/me"},
 		{"POST", "/register", http.StatusOK, "users:/register"},
 		{"POST", "/confirm", http.StatusOK, "users:/confirm"},
 		{"POST", "/login", http.StatusOK, "users:/login"},

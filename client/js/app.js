@@ -1,17 +1,26 @@
 const token = localStorage.getItem("token");
-const savedUser = JSON.parse(localStorage.getItem("user") || "null");
 
 if (!token) {
     window.location.href = "login.html";
 }
 
-if (savedUser && savedUser.firstName) {
-    document.getElementById("userName").textContent = savedUser.firstName + " " + (savedUser.lastName || "");
-    document.getElementById("userAvatar").textContent = savedUser.firstName[0].toUpperCase();
-}
-if (savedUser && savedUser.role === "admin") {
-    const adminLink = document.getElementById("adminPanelLink");
-    if (adminLink) adminLink.style.display = "inline-block";
+async function loadCurrentUser() {
+    try {
+        const me = await sendRequest("/me", "GET");
+        if (me.firstName) {
+            document.getElementById("userName").textContent = me.firstName + " " + (me.lastName || "");
+            document.getElementById("userAvatar").textContent = me.firstName[0].toUpperCase();
+        }
+        if (me.role === "admin") {
+            const adminLink = document.getElementById("adminPanelLink");
+            if (adminLink) adminLink.style.display = "inline-block";
+        }
+        if (typeof me.quotaBytes === "number") quotaBytes = me.quotaBytes;
+        if (typeof me.usedBytes === "number") usedBytes = me.usedBytes;
+        updateQuotaUI();
+    } catch (err) {
+        handleAuthError(err);
+    }
 }
 
 const folderModal = document.getElementById("folderModal");
@@ -152,6 +161,9 @@ async function loadQuota() {
         if (typeof res.quotaBytes === "number") {
             quotaBytes = res.quotaBytes;
         }
+        if (typeof res.usedBytes === "number") {
+            usedBytes = res.usedBytes;
+        }
         myQuotaRequests = Array.isArray(res.requests) ? res.requests : [];
         updateQuotaUI();
         renderQuotaRequests();
@@ -264,7 +276,6 @@ function renderDrive(filterQuery = "") {
         });
     }
 
-    usedBytes = currentFiles.reduce((sum, f) => sum + (Number(f.sizeBytes) || 0), 0);
     updateQuotaUI();
 }
 
@@ -463,8 +474,8 @@ document.querySelectorAll(".modal-bg").forEach(bg => {
 document.getElementById("saveFolderBtn").addEventListener("click", async () => {
     clearModalMsg("folderMsg");
     const name = document.getElementById("folderNameInput").value.trim();
-    if (!name) {
-        showModalMsg("folderMsg", "Unesite naziv foldera.");
+    if (!isValidItemName(name)) {
+        showModalMsg("folderMsg", "Naziv foldera mora imati 1-120 karaktera i ne sme sadrzati specijalne znake (< > : \" / \\ | ? *).");
         return;
     }
 
@@ -494,6 +505,14 @@ document.getElementById("saveUploadBtn").addEventListener("click", async () => {
     }
 
     const file = input.files[0];
+    if (!isValidItemName(file.name)) {
+        showModalMsg("uploadMsg", "Naziv datoteke sadrzi nedozvoljene karaktere.");
+        return;
+    }
+    if (!isAllowedFileExtension(file.name)) {
+        showModalMsg("uploadMsg", "Tip datoteke nije dozvoljen. Dozvoljeni tipovi: .txt, .pdf, .png, .jpg, .gif, .webp, .csv, .json, .md, .docx, .xlsx, .zip.");
+        return;
+    }
     if (file.size > MAX_UPLOAD_BYTES) {
         showModalMsg("uploadMsg", "Datoteka prelazi maksimalnu velicinu od 50 MB.");
         return;
@@ -505,6 +524,11 @@ document.getElementById("saveUploadBtn").addEventListener("click", async () => {
     try {
         const fd = new FormData();
         fd.append("file", file);
+
+        const hash = await computeFileSHA256(file);
+        if (hash) {
+            fd.append("sha256", hash);
+        }
 
         if (versionTargetFile) {
             await sendMultipart("/files/" + encodeURIComponent(versionTargetFile.id) + "/versions", fd, "POST");
@@ -520,6 +544,7 @@ document.getElementById("saveUploadBtn").addEventListener("click", async () => {
 
         versionTargetFile = null;
         closeAllModals();
+        await loadQuota();
         await loadFolderContents();
     } catch (err) {
         if (handleAuthError(err)) return;
@@ -532,8 +557,8 @@ document.getElementById("saveUploadBtn").addEventListener("click", async () => {
 document.getElementById("saveRenameBtn").addEventListener("click", async () => {
     clearModalMsg("renameMsg");
     const newName = renameInput.value.trim();
-    if (!newName || !renameTarget) {
-        showModalMsg("renameMsg", "Unesite novi naziv.");
+    if (!renameTarget || !isValidItemName(newName)) {
+        showModalMsg("renameMsg", "Naziv mora imati 1-120 karaktera i ne sme sadrzati specijalne znake (< > : \" / \\ | ? *).");
         return;
     }
 
@@ -640,6 +665,7 @@ searchInput.addEventListener("input", () => {
 });
 
 renderActivities();
+loadCurrentUser();
 loadQuota();
 loadFolderContents();
 loadNotifications(true);

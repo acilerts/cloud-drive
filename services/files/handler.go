@@ -90,6 +90,11 @@ func (handler *Handler) createFolder(
 		parentID = &id
 	}
 
+	if !isValidItemName(request.Name) {
+		platform.WriteError(w, http.StatusBadRequest, "invalid folder name")
+		return
+	}
+
 	folder, err := handler.service.CreateFolder(
 		r.Context(),
 		ownerID,
@@ -254,6 +259,11 @@ func (handler *Handler) renameFolder(
 		return
 	}
 
+	if !isValidItemName(request.Name) {
+		platform.WriteError(w, http.StatusBadRequest, "invalid folder name")
+		return
+	}
+
 	if err := handler.service.RenameFolder(
 		r.Context(),
 		ownerID,
@@ -300,6 +310,11 @@ func (handler *Handler) renameFile(
 
 	if err := decoder.Decode(&request); err != nil {
 		platform.WriteError(w, http.StatusBadRequest, "invalid request body")
+		return
+	}
+
+	if !isValidItemName(request.Name) {
+		platform.WriteError(w, http.StatusBadRequest, "invalid file name")
 		return
 	}
 
@@ -371,7 +386,7 @@ func (handler *Handler) uploadFile(
 	name := strings.TrimSpace(fileHeader.Filename)
 	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 
-	if name == "" || name == "." {
+	if !isValidItemName(name) {
 		platform.WriteError(w, http.StatusBadRequest, "invalid file name")
 		return
 	}
@@ -413,8 +428,25 @@ func (handler *Handler) uploadFile(
 
 	contentType := http.DetectContentType(sample[:n])
 
-	if _, err := uploadedFile.Seek(0, io.SeekStart); err != nil {
+	if !isAllowedFileType(name, contentType, fileHeader.Size) {
+		platform.WriteError(w, http.StatusBadRequest, "file type is not allowed")
+		return
+	}
+
+	actualHash, err := computeSHA256(uploadedFile)
+	if err != nil {
 		platform.WriteError(w, http.StatusInternalServerError, "could not process uploaded file")
+		return
+	}
+
+	expectedHash := strings.TrimSpace(r.Header.Get("X-File-SHA256"))
+	if expectedHash == "" {
+		if vals := r.MultipartForm.Value["sha256"]; len(vals) == 1 {
+			expectedHash = strings.TrimSpace(vals[0])
+		}
+	}
+	if expectedHash != "" && !strings.EqualFold(expectedHash, actualHash) {
+		platform.WriteError(w, http.StatusBadRequest, "file integrity check failed")
 		return
 	}
 
@@ -448,6 +480,8 @@ func (handler *Handler) uploadFile(
 		return
 	}
 
+	file.SHA256 = actualHash
+	w.Header().Set("X-File-SHA256", actualHash)
 	platform.WriteJSON(w, http.StatusCreated, file)
 }
 
@@ -502,7 +536,7 @@ func (handler *Handler) uploadFileVersion(
 	name := strings.TrimSpace(fileHeader.Filename)
 	name = filepath.Base(strings.ReplaceAll(name, "\\", "/"))
 
-	if name == "" || name == "." {
+	if !isValidItemName(name) {
 		platform.WriteError(w, http.StatusBadRequest, "invalid file name")
 		return
 	}
@@ -525,8 +559,25 @@ func (handler *Handler) uploadFileVersion(
 
 	contentType := http.DetectContentType(sample[:n])
 
-	if _, err := uploadedFile.Seek(0, io.SeekStart); err != nil {
+	if !isAllowedFileType(name, contentType, fileHeader.Size) {
+		platform.WriteError(w, http.StatusBadRequest, "file type is not allowed")
+		return
+	}
+
+	actualHash, err := computeSHA256(uploadedFile)
+	if err != nil {
 		platform.WriteError(w, http.StatusInternalServerError, "could not process uploaded file")
+		return
+	}
+
+	expectedHash := strings.TrimSpace(r.Header.Get("X-File-SHA256"))
+	if expectedHash == "" {
+		if vals := r.MultipartForm.Value["sha256"]; len(vals) == 1 {
+			expectedHash = strings.TrimSpace(vals[0])
+		}
+	}
+	if expectedHash != "" && !strings.EqualFold(expectedHash, actualHash) {
+		platform.WriteError(w, http.StatusBadRequest, "file integrity check failed")
 		return
 	}
 
@@ -556,5 +607,7 @@ func (handler *Handler) uploadFileVersion(
 		return
 	}
 
+	file.SHA256 = actualHash
+	w.Header().Set("X-File-SHA256", actualHash)
 	platform.WriteJSON(w, http.StatusCreated, file)
 }

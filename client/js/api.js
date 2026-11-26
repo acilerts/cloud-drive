@@ -91,3 +91,29 @@ function validateStrongPassword(password) {
     }
     return "";
 }
+
+const ALLOWED_FILE_EXTENSIONS = [
+    ".txt", ".pdf", ".png", ".jpg", ".jpeg", ".gif", ".webp",
+    ".csv", ".json", ".md", ".docx", ".xlsx", ".zip"
+];
+
+function isValidItemName(name) {
+    const trimmed = (name || "").trim();
+    if (trimmed.length < 1 || trimmed.length > 120) return false;
+    if (trimmed === "." || trimmed === "..") return false;
+    return !/[<>:"/\\|?*\x00-\x1f]/.test(trimmed);
+}
+
+function isAllowedFileExtension(filename) {
+    const lower = (filename || "").toLowerCase();
+    return ALLOWED_FILE_EXTENSIONS.some(ext => lower.endsWith(ext));
+}
+
+async function computeFileSHA256(file) {
+    if (!window.crypto || !window.crypto.subtle) return "";
+    const buf = await file.arrayBuffer();
+    const digest = await window.crypto.subtle.digest("SHA-256", buf);
+    return Array.from(new Uint8Array(digest))
+        .map(b => b.toString(16).padStart(2, "0"))
+        .join("");
+}

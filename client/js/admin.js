@@ -1,15 +1,26 @@
 const token = localStorage.getItem("token");
-const savedUser = JSON.parse(localStorage.getItem("user") || "null");
 
-if (!token || !savedUser) {
+if (!token) {
     window.location.href = "login.html";
-} else if (savedUser.role !== "admin") {
-    window.location.href = "index.html";
 }
 
-if (savedUser && savedUser.firstName) {
-    document.getElementById("userName").textContent = savedUser.firstName + " " + (savedUser.lastName || "");
-    document.getElementById("userAvatar").textContent = savedUser.firstName[0].toUpperCase();
+async function initAdmin() {
+    try {
+        const me = await sendRequest("/me", "GET");
+        if (me.role !== "admin") {
+            window.location.href = "index.html";
+            return;
+        }
+        if (me.firstName) {
+            document.getElementById("userName").textContent = me.firstName + " " + (me.lastName || "");
+            document.getElementById("userAvatar").textContent = me.firstName[0].toUpperCase();
+        }
+        await loadQuotaRequests("pending");
+    } catch (_) {
+        localStorage.removeItem("token");
+        localStorage.removeItem("user");
+        window.location.href = "login.html";
+    }
 }
 
 const adminMsg = document.getElementById("adminMsg");
@@ -288,4 +299,4 @@ document.getElementById("saveChangePwBtn").addEventListener("click", async () =>
     }
 });
 
-loadQuotaRequests("pending");
+initAdmin();
